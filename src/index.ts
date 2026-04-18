@@ -1,6 +1,6 @@
 import { ChannelType, Client, GatewayIntentBits, Partials } from "discord.js";
 import { env } from "./config.js";
-import { registerSlashCommands, handleInteraction, handlePrefixMessage } from "./commands.js";
+import { registerSlashCommands, handleButtonInteraction, handleInteraction, handleModalSubmit, handlePrefixMessage } from "./commands.js";
 import { applyRewards, processTextXp, processVoiceMinute, sendLevelAnnouncement } from "./leveling.js";
 
 const client = new Client({
@@ -25,8 +25,9 @@ client.once("clientReady", async () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  await handleInteraction(interaction).catch((err) => {
+  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isModalSubmit()) return;
+  const action = interaction.isModalSubmit() ? handleModalSubmit(interaction) : interaction.isButton() ? handleButtonInteraction(interaction) : handleInteraction(interaction);
+  await action.catch((err) => {
     console.error("[Nexus] Interaction error:", err);
     if (interaction.deferred || interaction.replied) interaction.editReply("Nexus hit an error while processing this command.").catch(() => null);
     else interaction.reply({ content: "Nexus hit an error while processing this command.", ephemeral: true }).catch(() => null);

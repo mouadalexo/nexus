@@ -1,233 +1,237 @@
-import { AttachmentBuilder, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, PermissionsBitField, REST, Routes, SlashCommandBuilder } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
 import { env } from "./config.js";
-import { getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, removeReward, toggleList, getManagerRoles, type LeaderboardType } from "./db.js";
+import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, type LeaderboardType } from "./db.js";
 import { rankCard, levelCard, topCard } from "./cards.js";
-import { addManualXp, canManageLevels, setLevel } from "./leveling.js";
+import { canManageLevels, setLevel } from "./leveling.js";
 
-const brand = 0x7c2cff;
+const brand = 0x4f8dff;
+const leaderboardTypes = ["overall", "text", "voice", "messages"];
 
 export async function registerSlashCommands(client: Client) {
   if (!client.user) return;
   const commands = [
-    new SlashCommandBuilder().setName("rank").setDescription("Show your Nexus rank card").addUserOption((o) => o.setName("user").setDescription("User to view").setRequired(false)),
-    new SlashCommandBuilder().setName("level").setDescription("Show detailed Nexus level stats").addUserOption((o) => o.setName("user").setDescription("User to view").setRequired(false)),
-    new SlashCommandBuilder().setName("top").setDescription("Show Nexus leaderboards").addStringOption((o) => o.setName("type").setDescription("Leaderboard type").setRequired(false).addChoices({ name: "Overall", value: "overall" }, { name: "Text XP", value: "text" }, { name: "Voice", value: "voice" }, { name: "Messages", value: "messages" })).addIntegerOption((o) => o.setName("page").setDescription("Page number").setMinValue(1).setRequired(false)),
-    new SlashCommandBuilder().setName("nexus").setDescription("Configure Nexus leveling").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addSubcommand((s) => s.setName("view").setDescription("View current settings"))
-      .addSubcommand((s) => s.setName("prefix").setDescription("Set prefix rank command").addStringOption((o) => o.setName("value").setDescription("Example: R").setRequired(true).setMaxLength(8)))
-      .addSubcommand((s) => s.setName("levelup-channel").setDescription("Set level-up message channel").addChannelOption((o) => o.setName("channel").setDescription("Target channel").setRequired(true)))
-      .addSubcommand((s) => s.setName("levelup-message").setDescription("Set level-up message text").addStringOption((o) => o.setName("message").setDescription("Use {user} {username} {level} {rank} {totalXp}").setRequired(true).setMaxLength(500)))
-      .addSubcommand((s) => s.setName("xp-rates").setDescription("Set XP rates").addIntegerOption((o) => o.setName("text-min").setDescription("Minimum text XP").setMinValue(1).setMaxValue(500).setRequired(true)).addIntegerOption((o) => o.setName("text-max").setDescription("Maximum text XP").setMinValue(1).setMaxValue(500).setRequired(true)).addIntegerOption((o) => o.setName("cooldown").setDescription("Text cooldown seconds").setMinValue(5).setMaxValue(3600).setRequired(true)).addIntegerOption((o) => o.setName("voice-per-minute").setDescription("Voice XP per minute, default 30 = 1.5x text average").setMinValue(1).setMaxValue(1000).setRequired(true)))
-      .addSubcommand((s) => s.setName("ignored-channel").setDescription("Enable/disable XP ignore for a channel").addChannelOption((o) => o.setName("channel").setDescription("Channel").setRequired(true)).addStringOption((o) => o.setName("kind").setDescription("XP kind").setRequired(true).addChoices({ name: "All", value: "all" }, { name: "Text", value: "text" }, { name: "Voice", value: "voice" })).addBooleanOption((o) => o.setName("enabled").setDescription("true ignores XP there, false allows XP").setRequired(true)))
-      .addSubcommand((s) => s.setName("ignored-role").setDescription("Enable/disable XP ignore for a role").addRoleOption((o) => o.setName("role").setDescription("Role").setRequired(true)).addBooleanOption((o) => o.setName("enabled").setDescription("true ignores users with this role").setRequired(true)))
-      .addSubcommand((s) => s.setName("manager-role").setDescription("Allow a role to edit XP/ranks").addRoleOption((o) => o.setName("role").setDescription("Role").setRequired(true)).addBooleanOption((o) => o.setName("enabled").setDescription("true allows level management").setRequired(true)))
-      .addSubcommand((s) => s.setName("stack-rewards").setDescription("Keep lower level reward roles when higher rewards are reached").addBooleanOption((o) => o.setName("enabled").setDescription("true keeps all rewards, false keeps highest tier only").setRequired(true)))
-      .addSubcommand((s) => s.setName("muted-voice").setDescription("Control muted/deafened voice XP").addBooleanOption((o) => o.setName("ignored").setDescription("true means muted/deafened users do not earn voice XP").setRequired(true))),
-    new SlashCommandBuilder().setName("reward").setDescription("Configure level role rewards").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addSubcommand((s) => s.setName("add").setDescription("Add role reward at level").addIntegerOption((o) => o.setName("level").setDescription("Level").setMinValue(1).setMaxValue(500).setRequired(true)).addRoleOption((o) => o.setName("role").setDescription("Role reward").setRequired(true)))
-      .addSubcommand((s) => s.setName("remove").setDescription("Remove rewards at level").addIntegerOption((o) => o.setName("level").setDescription("Level").setMinValue(1).setMaxValue(500).setRequired(true)).addRoleOption((o) => o.setName("role").setDescription("Optional exact role").setRequired(false)))
-      .addSubcommand((s) => s.setName("list").setDescription("List role rewards")),
-    new SlashCommandBuilder().setName("help").setDescription("Show all Nexus commands and setup guide"),
-    new SlashCommandBuilder().setName("xp").setDescription("Edit Nexus XP/ranks").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addSubcommand((s) => s.setName("add").setDescription("Add or remove text XP").addUserOption((o) => o.setName("user").setDescription("User").setRequired(true)).addIntegerOption((o) => o.setName("amount").setDescription("Use negative to remove").setMinValue(-1000000).setMaxValue(1000000).setRequired(true)))
-      .addSubcommand((s) => s.setName("set-level").setDescription("Set a member level").addUserOption((o) => o.setName("user").setDescription("User").setRequired(true)).addIntegerOption((o) => o.setName("level").setDescription("Target level").setMinValue(0).setMaxValue(500).setRequired(true))),
+    new SlashCommandBuilder().setName("nexus").setDescription("Configure Nexus essentials").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand((sub) => sub.setName("prefix").setDescription("Set rank text command prefix").addStringOption((o) => o.setName("value").setDescription("Example: R").setRequired(true).setMaxLength(8))),
+    new SlashCommandBuilder().setName("setup").setDescription("Open the Nexus server setup panel").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+    new SlashCommandBuilder().setName("help").setDescription("Show all Nexus text commands and setup guide"),
+    new SlashCommandBuilder().setName("xp").setDescription("Edit Nexus levels").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand((sub) => sub.setName("set-level").setDescription("Set a member level").addUserOption((o) => o.setName("user").setDescription("User").setRequired(true)).addIntegerOption((o) => o.setName("level").setDescription("Target level").setMinValue(0).setMaxValue(500).setRequired(true))),
   ].map((c) => c.toJSON());
   const rest = new REST().setToken(env.token);
   if (env.guildId) await rest.put(Routes.applicationGuildCommands(client.user.id, env.guildId), { body: commands });
   else await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
 }
 
-async function resolveMember(interaction: ChatInputCommandInteraction) {
-  const user = interaction.options.getUser("user") ?? interaction.user;
-  return interaction.guild!.members.fetch(user.id).catch(() => null);
+function normalizeType(value: string | undefined): LeaderboardType {
+  const type = value?.toLowerCase();
+  return (type && leaderboardTypes.includes(type) ? type : "overall") as LeaderboardType;
 }
 
-function noStatsEmbed() {
-  return new EmbedBuilder().setColor(brand).setDescription("No Nexus stats yet. Send messages or join voice to start earning XP.");
+function maxTopPage(guildId: string) {
+  return Math.max(1, Math.ceil(countUsers(guildId) / 10));
 }
 
-async function replyRank(interaction: ChatInputCommandInteraction) {
-  await interaction.deferReply();
-  const member = await resolveMember(interaction);
-  if (!member) return interaction.editReply("I could not find that member.");
-  const stats = ensureUser(interaction.guild!.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
-  const file = await rankCard(member, stats);
-  await interaction.editReply({ files: [file] });
+function topButtons(type: LeaderboardType, page: number, maxPage: number) {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`nexus_top:${type}:${Math.max(1, page - 1)}:prev`).setLabel("Prev").setStyle(ButtonStyle.Secondary).setDisabled(page <= 1),
+    new ButtonBuilder().setCustomId(`nexus_top:${type}:${Math.min(maxPage, page + 1)}:next`).setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(page >= maxPage),
+  )];
 }
 
-async function replyLevel(interaction: ChatInputCommandInteraction) {
-  await interaction.deferReply();
-  const member = await resolveMember(interaction);
-  if (!member) return interaction.editReply("I could not find that member.");
-  const stats = ensureUser(interaction.guild!.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
-  const file = await levelCard(member, stats);
-  await interaction.editReply({ files: [file] });
-}
-
-async function replyTop(interaction: ChatInputCommandInteraction) {
-  await interaction.deferReply();
-  const type = (interaction.options.getString("type") ?? "overall") as LeaderboardType;
-  const page = interaction.options.getInteger("page") ?? 1;
-  const users = getLeaderboard(interaction.guild!.id, type, 10, (page - 1) * 10);
-  const file = await topCard(interaction.guild!, type, page, users);
-  await interaction.editReply({ files: [file] });
+async function sendTop(target: Message | ButtonInteraction, type: LeaderboardType, page: number) {
+  const guild = target.guild!;
+  const maxPage = maxTopPage(guild.id);
+  const safePage = Math.min(Math.max(1, page), maxPage);
+  const users = getLeaderboard(guild.id, type, 10, (safePage - 1) * 10);
+  const file = await topCard(guild, type, safePage, users);
+  const payload = { files: [file], components: topButtons(type, safePage, maxPage) };
+  if (target instanceof Message) return target.reply(payload);
+  return target.update(payload);
 }
 
 function requireManager(member: GuildMember) {
   return canManageLevels(member);
 }
 
+function setupEmbed(guildId: string) {
+  const config = getConfig(guildId);
+  const rewards = getRewards(guildId);
+  const managers = getManagerRoles(guildId);
+  const events = getEventVoiceChannels(guildId);
+  return new EmbedBuilder()
+    .setColor(brand)
+    .setTitle("Nexus Setup Panel")
+    .setDescription("Use the buttons below to manage server leveling in one place.")
+    .addFields(
+      { name: "Text Commands", value: "`R` rank\n`L` level\n`Top` overall leaderboard", inline: true },
+      { name: "Rates", value: `Text ${config.textMinXp}-${config.textMaxXp} / ${config.textCooldownSeconds}s\nVoice ${config.voiceXpPerMinute}/min`, inline: true },
+      { name: "Level Up", value: `Channel: ${config.levelupChannelId ? `<#${config.levelupChannelId}>` : "default"}\nMessage: ${config.levelupMessage.slice(0, 180)}`, inline: false },
+      { name: "Rewards", value: rewards.length ? rewards.map((r) => `Level ${r.level} -> <@&${r.roleId}>`).join("\n").slice(0, 900) : "No rewards set", inline: false },
+      { name: "Manager Roles", value: managers.length ? managers.map((r) => `<@&${r}>`).join(" ") : "Admins only", inline: false },
+      { name: "Event Stage Voice", value: events.length ? events.map((e) => `<#${e.channelId}> = x${e.multiplier}`).join("\n") : "No boosted voice channels", inline: false },
+    );
+}
+
+function setupRows() {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("nexus_panel:view").setLabel("View Setup").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("nexus_panel:level_message").setLabel("Level Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:level_channel").setLabel("Level Channel").setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("nexus_panel:xp_rates").setLabel("XP Rates").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:add_reward").setLabel("Add Reward").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("nexus_panel:ignore_role").setLabel("Ignore Role").setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("nexus_panel:ignore_channel").setLabel("Ignore Channel").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:event_stage").setLabel("Event Stage Voice").setStyle(ButtonStyle.Success),
+    ),
+  ];
+}
+
+function textInput(id: string, label: string, placeholder: string, required = true) {
+  return new TextInputBuilder().setCustomId(id).setLabel(label).setPlaceholder(placeholder).setRequired(required).setStyle(TextInputStyle.Short);
+}
+
+function modal(id: string, title: string, inputs: TextInputBuilder[]) {
+  return new ModalBuilder().setCustomId(id).setTitle(title).addComponents(...inputs.map((input) => new ActionRowBuilder<TextInputBuilder>().addComponents(input)));
+}
+
+async function handleSetup(interaction: ChatInputCommandInteraction) {
+  if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to use the setup panel.", ephemeral: true });
+  return interaction.reply({ embeds: [setupEmbed(interaction.guild!.id)], components: setupRows(), ephemeral: true });
+}
+
+function extractId(value: string) {
+  return value.replace(/[^0-9]/g, "");
+}
+
+function boolValue(value: string) {
+  return !["false", "off", "no", "0", "remove", "disable"].includes(value.trim().toLowerCase());
+}
+
+async function openSetupModal(interaction: ButtonInteraction, action: string) {
+  if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to use the setup panel.", ephemeral: true });
+  if (action === "view") return interaction.update({ embeds: [setupEmbed(interaction.guild!.id)], components: setupRows() });
+  if (action === "level_message") return interaction.showModal(modal("nexus_modal:level_message", "Set Level Up Message", [textInput("message", "Message", "Use {user} {username} {level} {rank}")]));
+  if (action === "level_channel") return interaction.showModal(modal("nexus_modal:level_channel", "Set Level Up Channel", [textInput("channel", "Channel ID or mention", "#levels or 123456789")]));
+  if (action === "xp_rates") return interaction.showModal(modal("nexus_modal:xp_rates", "Set XP Rates", [textInput("textMin", "Text minimum", "8"), textInput("textMax", "Text maximum", "15"), textInput("cooldown", "Text cooldown seconds", "90"), textInput("voice", "Voice per minute", "12")]));
+  if (action === "add_reward") return interaction.showModal(modal("nexus_modal:add_reward", "Add Level Reward", [textInput("level", "Level", "10"), textInput("role", "Role ID or mention", "@Role or 123456789")]));
+  if (action === "ignore_role") return interaction.showModal(modal("nexus_modal:ignore_role", "Ignore Role", [textInput("role", "Role ID or mention", "@Role or 123456789"), textInput("enabled", "Enable ignore?", "true or false")]));
+  if (action === "ignore_channel") return interaction.showModal(modal("nexus_modal:ignore_channel", "Ignore Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789"), textInput("kind", "Kind", "all, text, or voice"), textInput("enabled", "Enable ignore?", "true or false")]));
+  if (action === "event_stage") return interaction.showModal(modal("nexus_modal:event_stage", "Setup Event Stage Voice", [textInput("channel", "Voice channel ID or mention", "voice channel or 123456789"), textInput("multiplier", "XP multiplier", "1, 2, or 3")]));
+}
+
+async function handleSetupModal(interaction: ModalSubmitInteraction) {
+  if (!interaction.guild || !requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to update Nexus setup.", ephemeral: true });
+  const action = interaction.customId.split(":")[1];
+  const guildId = interaction.guild.id;
+  if (action === "level_message") updateConfig(guildId, { levelupMessage: interaction.fields.getTextInputValue("message").slice(0, 500) });
+  if (action === "level_channel") updateConfig(guildId, { levelupChannelId: extractId(interaction.fields.getTextInputValue("channel")) || null });
+  if (action === "xp_rates") {
+    const textMinXp = Math.max(1, Number(interaction.fields.getTextInputValue("textMin")) || 8);
+    const textMaxXp = Math.max(textMinXp, Number(interaction.fields.getTextInputValue("textMax")) || textMinXp);
+    const textCooldownSeconds = Math.max(5, Number(interaction.fields.getTextInputValue("cooldown")) || 90);
+    const voiceXpPerMinute = Math.max(1, Number(interaction.fields.getTextInputValue("voice")) || 12);
+    updateConfig(guildId, { textMinXp, textMaxXp, textCooldownSeconds, voiceXpPerMinute });
+  }
+  if (action === "add_reward") {
+    const roleId = extractId(interaction.fields.getTextInputValue("role"));
+    if (roleId) setReward(guildId, Math.max(1, Number(interaction.fields.getTextInputValue("level")) || 1), roleId);
+  }
+  if (action === "ignore_role") {
+    const roleId = extractId(interaction.fields.getTextInputValue("role"));
+    if (roleId) toggleList("ignored_roles", guildId, roleId, boolValue(interaction.fields.getTextInputValue("enabled")));
+  }
+  if (action === "ignore_channel") {
+    const channelId = extractId(interaction.fields.getTextInputValue("channel"));
+    const kindInput = interaction.fields.getTextInputValue("kind").trim().toLowerCase();
+    const kind = ["text", "voice", "all"].includes(kindInput) ? kindInput : "all";
+    if (channelId) toggleList("ignored_channels", guildId, channelId, boolValue(interaction.fields.getTextInputValue("enabled")), kind);
+  }
+  if (action === "event_stage") {
+    const channelId = extractId(interaction.fields.getTextInputValue("channel"));
+    if (channelId) setEventVoiceChannel(guildId, channelId, Math.max(1, Math.min(3, Number(interaction.fields.getTextInputValue("multiplier")) || 1)));
+  }
+  return interaction.reply({ content: "Nexus setup updated.", embeds: [setupEmbed(guildId)], components: setupRows(), ephemeral: true });
+}
+
 async function handleNexus(interaction: ChatInputCommandInteraction) {
   if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to configure Nexus.", ephemeral: true });
   const sub = interaction.options.getSubcommand();
-  const guildId = interaction.guild!.id;
-  if (sub === "view") {
-    const config = getConfig(guildId);
-    const rewards = getRewards(guildId);
-    const managers = getManagerRoles(guildId);
-    return interaction.reply({ embeds: [new EmbedBuilder().setColor(brand).setTitle("Nexus Settings").addFields(
-      { name: "Prefix", value: `\`${config.prefix}\``, inline: true },
-      { name: "Level-up Channel", value: config.levelupChannelId ? `<#${config.levelupChannelId}>` : "Same channel/fallback", inline: true },
-      { name: "XP", value: `Text ${config.textMinXp}-${config.textMaxXp} / ${config.textCooldownSeconds}s\nVoice ${config.voiceXpPerMinute}/min`, inline: true },
-      { name: "Reward Mode", value: config.stackRewards ? "Stack rewards" : "Highest reward only", inline: true },
-      { name: "Manager Roles", value: managers.length ? managers.map((r) => `<@&${r}>`).join(" ") : "Admins only", inline: false },
-      { name: "Rewards", value: rewards.length ? rewards.map((r) => `Level ${r.level} → <@&${r.roleId}>`).join("\n").slice(0, 1000) : "No rewards set", inline: false },
-      { name: "Level-up Message", value: config.levelupMessage, inline: false },
-    )], ephemeral: true });
+  if (sub === "prefix") {
+    updateConfig(interaction.guild!.id, { prefix: interaction.options.getString("value", true) });
+    return interaction.reply({ content: "Nexus rank prefix updated. Text commands still work as R, L, and Top.", ephemeral: true });
   }
-  if (sub === "prefix") updateConfig(guildId, { prefix: interaction.options.getString("value", true) });
-  if (sub === "levelup-channel") updateConfig(guildId, { levelupChannelId: interaction.options.getChannel("channel", true).id });
-  if (sub === "levelup-message") updateConfig(guildId, { levelupMessage: interaction.options.getString("message", true) });
-  if (sub === "xp-rates") updateConfig(guildId, { textMinXp: interaction.options.getInteger("text-min", true), textMaxXp: interaction.options.getInteger("text-max", true), textCooldownSeconds: interaction.options.getInteger("cooldown", true), voiceXpPerMinute: interaction.options.getInteger("voice-per-minute", true) });
-  if (sub === "ignored-channel") toggleList("ignored_channels", guildId, interaction.options.getChannel("channel", true).id, interaction.options.getBoolean("enabled", true), interaction.options.getString("kind", true));
-  if (sub === "ignored-role") toggleList("ignored_roles", guildId, interaction.options.getRole("role", true).id, interaction.options.getBoolean("enabled", true));
-  if (sub === "manager-role") toggleList("manager_roles", guildId, interaction.options.getRole("role", true).id, interaction.options.getBoolean("enabled", true));
-  if (sub === "stack-rewards") updateConfig(guildId, { stackRewards: interaction.options.getBoolean("enabled", true) ? 1 : 0 });
-  if (sub === "muted-voice") updateConfig(guildId, { ignoreMutedVoice: interaction.options.getBoolean("ignored", true) ? 1 : 0 });
-  return interaction.reply({ content: "Nexus settings updated.", ephemeral: true });
-}
-
-async function handleReward(interaction: ChatInputCommandInteraction) {
-  if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to configure rewards.", ephemeral: true });
-  const sub = interaction.options.getSubcommand();
-  if (sub === "add") {
-    setReward(interaction.guild!.id, interaction.options.getInteger("level", true), interaction.options.getRole("role", true).id);
-    return interaction.reply({ content: "Reward added.", ephemeral: true });
-  }
-  if (sub === "remove") {
-    removeReward(interaction.guild!.id, interaction.options.getInteger("level", true), interaction.options.getRole("role")?.id);
-    return interaction.reply({ content: "Reward removed.", ephemeral: true });
-  }
-  const rewards = getRewards(interaction.guild!.id);
-  return interaction.reply({ embeds: [new EmbedBuilder().setColor(brand).setTitle("Nexus Role Rewards").setDescription(rewards.length ? rewards.map((r) => `Level ${r.level} → <@&${r.roleId}>`).join("\n") : "No rewards set.")], ephemeral: true });
 }
 
 async function handleXp(interaction: ChatInputCommandInteraction) {
-  if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to edit XP.", ephemeral: true });
-  const sub = interaction.options.getSubcommand();
+  if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to edit levels.", ephemeral: true });
   const member = await interaction.guild!.members.fetch(interaction.options.getUser("user", true).id).catch(() => null);
   if (!member) return interaction.reply({ content: "Member not found.", ephemeral: true });
-  if (sub === "add") {
-    const level = addManualXp(member, interaction.options.getInteger("amount", true));
-    return interaction.reply({ content: `${member} is now level ${level}.`, ephemeral: true });
-  }
   setLevel(member, interaction.options.getInteger("level", true));
   return interaction.reply({ content: `${member} level was updated.`, ephemeral: true });
 }
 
-
-async function handleHelp(interaction: ChatInputCommandInteraction) {
-  const config = getConfig(interaction.guild!.id);
-  const p = config.prefix;
-
-  const embed = new EmbedBuilder()
+function buildHelpEmbed(guildId: string) {
+  const config = getConfig(guildId);
+  return new EmbedBuilder()
     .setColor(brand)
-    .setTitle("🌌 Nexus — Leveling Bot Help")
-    .setDescription("Nexus tracks XP from messages and voice. Level up to earn role rewards.")
+    .setTitle("Nexus Leveling Bot Help")
+    .setDescription("Nexus uses text commands for member stats: R for rank, L for level, and Top for the overall leaderboard.")
     .addFields(
       {
-        name: "📊 How XP is Earned",
+        name: "Member text commands",
         value: [
-          "• **Text** — " + config.textMinXp + "–" + config.textMaxXp + " XP per message (" + config.textCooldownSeconds + "s cooldown)",
-          "• **Voice** — " + config.voiceXpPerMinute + " XP per minute in voice channels",
-          "• **Muted/deafened** — " + (config.ignoreMutedVoice ? "no voice XP" : "still earns voice XP"),
+          "`R` or `R @user` - Shows the rank card.",
+          "`L` or `L @user` - Shows the detailed level card.",
+          "`Top` - Shows the overall level leaderboard.",
+          "`Top voice`, `Top text`, `Top messages` - Shows a specific leaderboard.",
+          "`Top 2` or `Top voice 2` - Opens a specific page.",
+          "`Help` or `R help` - Shows this guide."
         ].join("\n"),
         inline: false,
       },
       {
-        name: "👤 Member Commands",
+        name: "Admin setup",
         value: [
-          "`/rank [@user]` — Visual rank card with level & XP progress",
-          "`/level [@user]` — Detailed stat card (text XP, voice XP, messages)",
-          "`/top [type] [page]` — Leaderboard — types: overall · text · voice · messages",
-          "`" + p + "` — Prefix rank card (same as /rank)",
-          "`" + p + " @user` — Rank card for another member",
-          "`" + p + " level [@user]` — Level card",
-          "`" + p + " top [type]` — Leaderboard",
+          "`/setup` - Opens the button setup panel for rewards, ignored roles/channels, level-up message, event stage voice, and XP rates.",
+          "`/nexus prefix <value>` - Changes the rank shortcut prefix. Current: `" + config.prefix + "`.",
+          "`/xp set-level` - Sets a member level."
         ].join("\n"),
         inline: false,
-      },
-      {
-        name: "⚙️ Admin / Manager Commands",
-        value: [
-          "`/nexus view` — See all current settings",
-          "`/nexus prefix <value>` — Change the prefix (default: R)",
-          "`/nexus levelup-channel <#ch>` — Where level-up messages are sent",
-          "`/nexus levelup-message <text>` — Customize level-up message",
-          "`/nexus xp-rates` — Set text min/max XP, cooldown, voice XP/min",
-          "`/nexus ignored-channel` — Stop a channel from giving XP",
-          "`/nexus ignored-role` — Stop a role from earning XP",
-          "`/nexus manager-role` — Let a role use /xp and /reward commands",
-          "`/nexus stack-rewards` — Keep all reward roles or only the highest",
-          "`/nexus muted-voice` — Toggle voice XP for muted/deafened users",
-        ].join("\n"),
-        inline: false,
-      },
-      {
-        name: "🎁 Level Rewards",
-        value: [
-          "`/reward add <level> <@role>` — Give a role when a member reaches a level",
-          "`/reward remove <level> [@role]` — Remove a reward",
-          "`/reward list` — View all configured rewards",
-          "",
-          "**Reward mode:** " + (config.stackRewards ? "Stack — members keep all earned reward roles" : "Replace — only the highest reward role is kept"),
-        ].join("\n"),
-        inline: false,
-      },
-      {
-        name: "📋 XP Manager Commands",
-        value: [
-          "`/xp add <@user> <amount>` — Add or remove XP (use negative to subtract)",
-          "`/xp set-level <@user> <level>` — Force a member to a specific level",
-        ].join("\n"),
-        inline: false,
-      },
-      {
-        name: "🚀 Quick Setup Guide",
-        value: [
-          "**1.** `/nexus levelup-channel` — Pick where level-up messages appear",
-          "**2.** `/nexus xp-rates` — Tune how fast members level up",
-          "**3.** `/reward add` — Set roles to award at each milestone",
-          "**4.** `/nexus manager-role` — Give your staff XP edit access",
-          "**5.** `/nexus view` — Confirm everything looks right",
-        ].join("\n"),
-        inline: false,
-      },
+      }
     )
-    .setFooter({ text: "Nexus • Night Stars Leveling" })
+    .setFooter({ text: "Nexus - Night Stars Leveling" })
     .setTimestamp();
+}
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+async function handleHelp(interaction: ChatInputCommandInteraction) {
+  await interaction.reply({ embeds: [buildHelpEmbed(interaction.guild!.id)], ephemeral: true });
+}
+
+export async function handleButtonInteraction(interaction: ButtonInteraction) {
+  if (!interaction.guild) return;
+  if (interaction.customId.startsWith("nexus_panel:")) return openSetupModal(interaction, interaction.customId.split(":")[1]);
+  if (!interaction.customId.startsWith("nexus_top:")) return;
+  const [, rawType, rawPage] = interaction.customId.split(":");
+  const type = normalizeType(rawType);
+  const page = Math.max(1, Number(rawPage) || 1);
+  return sendTop(interaction, type, page);
+}
+
+export async function handleModalSubmit(interaction: ModalSubmitInteraction) {
+  if (!interaction.customId.startsWith("nexus_modal:")) return;
+  return handleSetupModal(interaction);
 }
 
 export async function handleInteraction(interaction: ChatInputCommandInteraction) {
   if (!interaction.guild) return;
   if (interaction.commandName === "help") return handleHelp(interaction);
-  if (interaction.commandName === "rank") return replyRank(interaction);
-  if (interaction.commandName === "level") return replyLevel(interaction);
-  if (interaction.commandName === "top") return replyTop(interaction);
+  if (interaction.commandName === "setup") return handleSetup(interaction);
   if (interaction.commandName === "nexus") return handleNexus(interaction);
-  if (interaction.commandName === "reward") return handleReward(interaction);
   if (interaction.commandName === "xp") return handleXp(interaction);
 }
 
@@ -242,19 +246,25 @@ export async function handlePrefixMessage(message: Message) {
   if (!message.guild || message.author.bot) return;
   const config = getConfig(message.guild.id);
   const trimmed = message.content.trim();
-  const prefix = config.prefix;
-  if (trimmed !== prefix && !trimmed.startsWith(`${prefix} `)) return;
-  const args = trimmed === prefix ? [] : trimmed.slice(prefix.length).trim().split(/\s+/g);
+  if (!trimmed) return;
+  const args = trimmed.split(/\s+/g);
   const command = args[0]?.toLowerCase();
-  if (!command || message.mentions.users.size || /^\d{15,25}$/.test(command)) {
-    const member = await memberFromArg(message, args[0]);
+  const rankAliases = new Set([config.prefix.toLowerCase(), "r", "rank"]);
+
+  if (rankAliases.has(command)) {
+    if (args[1]?.toLowerCase() === "help") {
+      await message.reply({ embeds: [buildHelpEmbed(message.guild.id)] });
+      return;
+    }
+    const member = await memberFromArg(message, args[1]);
     if (!member) return;
     const stats = ensureUser(message.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
     const file = await rankCard(member, stats);
     await message.reply({ files: [file] });
     return;
   }
-  if (command === "level") {
+
+  if (command === "l" || command === "level") {
     const member = await memberFromArg(message, args[1]);
     if (!member) return;
     const stats = ensureUser(message.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
@@ -262,11 +272,17 @@ export async function handlePrefixMessage(message: Message) {
     await message.reply({ files: [file] });
     return;
   }
-  if (command === "top") {
-    const type = (["overall", "text", "voice", "messages"].includes(args[1]) ? args[1] : "overall") as LeaderboardType;
-    const page = Math.max(1, Number(args[2] ?? 1) || 1);
-    const users = getLeaderboard(message.guild.id, type, 10, (page - 1) * 10);
-    const file = await topCard(message.guild, type, page, users);
-    await message.reply({ files: [file] });
+
+  if (command === "top" || command === "leaderboard") {
+    const firstArg = args[1]?.toLowerCase();
+    const type = normalizeType(firstArg);
+    const pageArg = leaderboardTypes.includes(firstArg ?? "") ? args[2] : args[1];
+    const page = Math.max(1, Number(pageArg ?? 1) || 1);
+    await sendTop(message, type, page);
+    return;
+  }
+
+  if (command === "help") {
+    await message.reply({ embeds: [buildHelpEmbed(message.guild.id)] });
   }
 }

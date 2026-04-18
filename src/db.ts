@@ -15,6 +15,8 @@ export type GuildConfig = {
   ignoreMutedVoice: number;
 };
 
+export type EventVoiceChannel = { guildId: string; channelId: string; multiplier: number };
+
 export type UserStats = {
   guildId: string;
   userId: string;
@@ -41,9 +43,10 @@ type Store = {
   ignoredChannels: { guildId: string; channelId: string; kind: string }[];
   ignoredRoles: { guildId: string; roleId: string }[];
   managerRoles: { guildId: string; roleId: string }[];
+  eventVoiceChannels: EventVoiceChannel[];
 };
 
-const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], ignoredRoles: [], managerRoles: [] });
+const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], ignoredRoles: [], managerRoles: [], eventVoiceChannels: [] });
 fs.mkdirSync(path.dirname(env.databasePath), { recursive: true });
 const filePath = env.databasePath.endsWith(".sqlite") ? env.databasePath.replace(/\.sqlite$/, ".json") : env.databasePath;
 let store: Store = emptyStore();
@@ -91,10 +94,10 @@ export function getConfig(guildId: string): GuildConfig {
     prefix: env.defaultPrefix,
     levelupChannelId: null,
     levelupMessage: "{user} reached level {level}! Rank #{rank}",
-    textMinXp: 15,
-    textMaxXp: 25,
-    textCooldownSeconds: 60,
-    voiceXpPerMinute: 30,
+    textMinXp: 8,
+    textMaxXp: 15,
+    textCooldownSeconds: 90,
+    voiceXpPerMinute: 12,
     stackRewards: 1,
     ignoreMutedVoice: 1,
   };
@@ -215,5 +218,21 @@ export function getManagerRoles(guildId: string) {
 export function updateConfig(guildId: string, fields: Partial<GuildConfig>) {
   const config = getConfig(guildId);
   Object.assign(config, fields, { guildId });
+  saveSoon();
+}
+
+
+export function getEventVoiceChannels(guildId: string) {
+  return store.eventVoiceChannels.filter((c) => c.guildId === guildId).sort((a, b) => a.channelId.localeCompare(b.channelId));
+}
+
+export function getVoiceXpMultiplier(guildId: string, channelId: string) {
+  return store.eventVoiceChannels.find((c) => c.guildId === guildId && c.channelId === channelId)?.multiplier ?? 1;
+}
+
+export function setEventVoiceChannel(guildId: string, channelId: string, multiplier: number) {
+  store.eventVoiceChannels = store.eventVoiceChannels.filter((c) => !(c.guildId === guildId && c.channelId === channelId));
+  const safeMultiplier = Math.min(3, Math.max(1, Math.floor(multiplier)));
+  if (safeMultiplier > 1) store.eventVoiceChannels.push({ guildId, channelId, multiplier: safeMultiplier });
   saveSoon();
 }

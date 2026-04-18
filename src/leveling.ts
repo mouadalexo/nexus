@@ -1,5 +1,5 @@
 import type { GuildMember, TextBasedChannel } from "discord.js";
-import { getConfig, getRewards, getRanks, getManagerRoles, addActivity, ensureUser, getUser, setUserXp, hasIgnoredRole, isIgnoredChannel } from "./db.js";
+import { getConfig, getRewards, getRanks, getManagerRoles, addActivity, ensureUser, getUser, setUserXp, hasIgnoredRole, isIgnoredChannel, getVoiceXpMultiplier } from "./db.js";
 
 const textCooldowns = new Map<string, number>();
 
@@ -8,7 +8,7 @@ export function totalXp(stats: { textXp: number; voiceXp: number }) {
 }
 
 export function xpNeededForNext(level: number) {
-  return 100 + level * 50 + level * level * 5;
+  return 250 + level * 120 + level * level * 20;
 }
 
 export function xpAtLevel(level: number) {
@@ -76,7 +76,8 @@ export async function processVoiceMinute(member: GuildMember, channelId: string)
   if (config.ignoreMutedVoice && (member.voice.selfMute || member.voice.serverMute || member.voice.selfDeaf || member.voice.serverDeaf)) return null;
   const before = ensureUser(guildId, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
   const beforeLevel = levelFromXp(totalXp(before));
-  const xp = Math.max(1, Math.floor(config.voiceXpPerMinute));
+  const multiplier = getVoiceXpMultiplier(guildId, channelId);
+  const xp = Math.max(1, Math.floor(config.voiceXpPerMinute * multiplier));
   const afterLevel = levelFromXp(totalXp(before) + xp);
   addActivity({ guildId, userId: member.id, username: member.user.username, avatarUrl: member.displayAvatarURL({ extension: "png", size: 128 }), voiceXp: xp, voiceSeconds: 60, level: afterLevel, channelId, channelKind: "voice" });
   return afterLevel > beforeLevel ? { member, oldLevel: beforeLevel, newLevel: afterLevel, xpGained: xp } : null;
