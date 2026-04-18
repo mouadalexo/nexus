@@ -1,11 +1,12 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuInteraction, TextInputBuilder, TextInputStyle } from "discord.js";
 import { env } from "./config.js";
-import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, type LeaderboardType } from "./db.js";
-import { rankCard, levelCard, topCard } from "./cards.js";
-import { addRewardXp, canManageLevels, setLevel } from "./leveling.js";
+import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, getIgnoredChannels, getIgnoredRoles, getChannelLeaderboard, countChannels, type LeaderboardType } from "./db.js";
+import { rankCard, levelCard, topCard, statsCard, type StatsView } from "./cards.js";
+import { addRewardXp, applyRewards, canManageLevels, setLevel } from "./leveling.js";
 
 const brand = 0x6f55ff;
 const leaderboardTypes = ["overall", "text", "voice", "messages"];
+const statsViews = ["overview", "message_members", "voice_members", "message_channels", "voice_channels"] as const;
 
 export async function registerSlashCommands(client: Client) {
   if (!client.user) return;
@@ -38,6 +39,10 @@ function topButtons(type: LeaderboardType, page: number, maxPage: number) {
   )];
 }
 
+function normalizeStatsView(value: string | undefined): StatsView {
+  return statsViews.includes(value as StatsView) ? value as StatsView : "overview";
+}
+
 async function sendTop(target: Message | ButtonInteraction, type: LeaderboardType, page: number) {
   const guild = target.guild!;
   const maxPage = maxTopPage(guild.id);
@@ -45,6 +50,49 @@ async function sendTop(target: Message | ButtonInteraction, type: LeaderboardTyp
   const users = getLeaderboard(guild.id, type, 10, (safePage - 1) * 10);
   const file = await topCard(guild, type, safePage, users);
   const payload = { files: [file], components: topButtons(type, safePage, maxPage) };
+  if (target instanceof Message) return target.reply(payload);
+  return target.update(payload);
+}
+
+function maxStatsPage(guildId: string, view: StatsView) {
+  if (view === "overview") return 1;
+  const total = view === "message_channels" ? countChannels(guildId, "text") : view === "voice_channels" ? countChannels(guildId, "voice") : countUsers(guildId);
+  return Math.max(1, Math.ceil(total / 10));
+}
+
+function statsRows(view: StatsView, page: number, maxPage: number) {
+  return [
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("nexus_stats_select")
+        .setPlaceholder("Choose a statistics view")
+        .addOptions(
+          { label: "Overview", value: "overview", description: "Main statistics menu", default: view === "overview" },
+          { label: "Top Message Members", value: "message_members", description: "Most active message members", default: view === "message_members" },
+          { label: "Top Voice Members", value: "voice_members", description: "Most active voice members", default: view === "voice_members" },
+          { label: "Top Message Channels", value: "message_channels", description: "Most active text channels", default: view === "message_channels" },
+          { label: "Top Voice Channels", value: "voice_channels", description: "Most active voice channels", default: view === "voice_channels" },
+        ),
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`nexus_stats:${view}:1:first`).setLabel("First").setStyle(ButtonStyle.Secondary).setDisabled(view === "overview" || page <= 1),
+      new ButtonBuilder().setCustomId(`nexus_stats:${view}:${Math.max(1, page - 1)}:prev`).setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(view === "overview" || page <= 1),
+      new ButtonBuilder().setCustomId(`nexus_stats:${view}:${page}:noop`).setLabel(`${page}/${maxPage}`).setStyle(ButtonStyle.Secondary).setDisabled(true),
+      new ButtonBuilder().setCustomId(`nexus_stats:${view}:${Math.min(maxPage, page + 1)}:next`).setLabel("Next").setStyle(ButtonStyle.Success).setDisabled(view === "overview" || page >= maxPage),
+      new ButtonBuilder().setCustomId(`nexus_stats:${view}:${maxPage}:last`).setLabel("Last").setStyle(ButtonStyle.Success).setDisabled(view === "overview" || page >= maxPage),
+    ),
+  ];
+}
+
+async function sendStats(target: Message | ButtonInteraction | StringSelectMenuInteraction, view: StatsView, page: number) {
+  const guild = target.guild!;
+  const maxPage = maxStatsPage(guild.id, view);
+  const safePage = Math.min(Math.max(1, page), maxPage);
+  const offset = (safePage - 1) * 10;
+  const users = view === "voice_members" ? getLeaderboard(guild.id, "voice", 10, offset) : getLeaderboard(guild.id, "messages", 10, offset);
+  const channels = view === "voice_channels" ? getChannelLeaderboard(guild.id, "voice", 10, offset) : getChannelLeaderboard(guild.id, "text", 10, offset);
+  const file = await statsCard(guild, view, safePage, users, channels);
+  const payload = { files: [file], components: statsRows(view, safePage, maxPage) };
   if (target instanceof Message) return target.reply(payload);
   return target.update(payload);
 }
@@ -63,19 +111,31 @@ function setupEmbed(guildId: string) {
   const managers = getManagerRoles(guildId);
   const events = getEventVoiceChannels(guildId);
   const rewardGivers = getRewardGiverRoles(guildId);
+  const ignoredRoles = getIgnoredRoles(guildId);
+  const ignoredChannels = getIgnoredChannels(guildId);
+  return new EmbedBuilder()
+    .setColor(brand)
+    .setTitle("🌌 Current Nexus Setup")
+    .setDescription("Everything important is shown here. Use the buttons below to update only the section you need.")
+    .addFields(
+      { name: "📌 Member Commands", value: "`R` rank\n`L` level\n`S` statistics\n`Top` leaderboard\n`Reward @user` daily reward", inline: true },
+      { name: "⚡ XP Rates", value: `Text: ${config.textMinXp}-${config.textMaxXp} XP / ${config.textCooldownSeconds}s\nVoice: ${config.voiceXpPerMinute} XP/min`, inline: true },
+      { name: "📣 Level Message", value: `Channel: ${config.levelupChannelId ? `<#${config.levelupChannelId}>` : "same channel"}\n${config.levelupMessage.slice(0, 220)}`, inline: false },
+      { name: "🏅 Level Rewards", value: rewards.length ? rewards.map((r) => `• Level ${r.level}: <@&${r.roleId}>`).join("\n").slice(0, 900) : "No level rewards set.", inline: false },
+      { name: "🎁 Reward Givers", value: `Amount: ${config.rewardXpAmount} hidden XP\nRoles: ${rewardGivers.length ? rewardGivers.map((r) => `<@&${r}>`).join(" ") : "none"}`, inline: false },
+      { name: "🚫 Jail", value: config.jailRoleId ? `<@&${config.jailRoleId}> resets level to 0 and blocks XP.` : "No jail role set.", inline: false },
+      { name: "🙈 Ignored Roles", value: ignoredRoles.length ? ignoredRoles.map((r) => `<@&${r}>`).join(" ") : "none", inline: false },
+      { name: "🔇 Ignored Channels", value: ignoredChannels.length ? ignoredChannels.map((c) => `<#${c.channelId}> (${c.kind})`).join("\n").slice(0, 900) : "none", inline: false },
+      { name: "🎤 Event Voice", value: events.length ? events.map((e) => `• <#${e.channelId}> x${e.multiplier}`).join("\n") : "none", inline: false },
+      { name: "🛠️ Managers", value: managers.length ? managers.map((r) => `<@&${r}>`).join(" ") : "Admins only", inline: false },
+    );
+}
+
+function setupIntroEmbed() {
   return new EmbedBuilder()
     .setColor(brand)
     .setTitle("🌌 Nexus Setup Panel")
-    .setDescription("Manage leveling, rewards, jail, XP rates, and messages from one clear panel. Use the colored buttons below to update one section at a time.")
-    .addFields(
-      { name: "📌 Member Commands", value: "`R` rank\n`L` level\n`Top` overall leaderboard\n`Reward @user` daily reward", inline: true },
-      { name: "⚡ Leveling Speed", value: `Text ${config.textMinXp}-${config.textMaxXp} / ${config.textCooldownSeconds}s\nVoice ${config.voiceXpPerMinute}/min\nCurve: easy early, harder later`, inline: true },
-      { name: "📣 Level Up Message", value: `Channel: ${config.levelupChannelId ? `<#${config.levelupChannelId}>` : "default"}\n${config.levelupMessage.slice(0, 180)}`, inline: false },
-      { name: "🎁 Reward Giver", value: `Daily reward: ${config.rewardXpAmount} hidden XP\nRoles: ${rewardGivers.length ? rewardGivers.map((r) => `<@&${r}>`).join(" ") : "No reward giver roles"}\nLimit: one reward per member per day`, inline: false },
-      { name: "🚫 Jail Role", value: config.jailRoleId ? `<@&${config.jailRoleId}> resets members to level 0 and blocks XP while jailed.` : "No jail role set.", inline: false },
-      { name: "🏅 Level Rewards", value: rewards.length ? rewards.map((r) => `Level ${r.level} -> <@&${r.roleId}>`).join("\n").slice(0, 900) : "No level rewards set", inline: false },
-      { name: "🛠️ Managers / Event Stage", value: `Managers: ${managers.length ? managers.map((r) => `<@&${r}>`).join(" ") : "Admins only"}\nEvent voice: ${events.length ? events.map((e) => `<#${e.channelId}> x${e.multiplier}`).join(", ") : "none"}`, inline: false },
-    );
+    .setDescription("Manage leveling, rewards, jail, XP rates, ignored roles/channels, event voice boosts, and messages from one clear panel. Click **View Setup** to see the current setup.");
 }
 
 function rewardEmbed(guildId: string) {
@@ -131,7 +191,7 @@ function modal(id: string, title: string, inputs: TextInputBuilder[]) {
 
 async function handleSetup(interaction: ChatInputCommandInteraction) {
   if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to use the setup panel.", ephemeral: true });
-  return interaction.reply({ embeds: [setupEmbed(interaction.guild!.id)], components: setupRows(), ephemeral: true });
+  return interaction.reply({ embeds: [setupIntroEmbed()], components: setupRows(), ephemeral: true });
 }
 
 function extractId(value: string) {
@@ -216,6 +276,7 @@ async function handleXp(interaction: ChatInputCommandInteraction) {
   const member = await interaction.guild!.members.fetch(interaction.options.getUser("user", true).id).catch(() => null);
   if (!member) return interaction.reply({ content: "Member not found.", ephemeral: true });
   setLevel(member, interaction.options.getInteger("level", true));
+  await applyRewards(member, interaction.options.getInteger("level", true));
   return interaction.reply({ content: `${member} level was updated.`, ephemeral: true });
 }
 
@@ -226,7 +287,7 @@ function buildHelpEmbed(guildId: string) {
     .setTitle("✨ Nexus Leveling Guide")
     .setDescription("A clean level system for Night Stars. Early levels are easy, higher levels become harder with a progressive curve.")
     .addFields(
-      { name: "📌 Member Commands", value: "`R` or `R @user` - Rank card\n`L` or `L @user` - Level card\n`Top` - Overall level leaderboard\n`Top voice`, `Top text`, `Top messages` - Other leaderboards", inline: false },
+      { name: "📌 Member Commands", value: "`R` or `R @user` - Rank card\n`L` or `L @user` - Level card\n`S` - Statistics menu\n`Top` - Overall level leaderboard\n`Top voice`, `Top text`, `Top messages` - Other leaderboards", inline: false },
       { name: "🎁 Reward Giver", value: `Reward givers type \`Reward @user\` to give ${config.rewardXpAmount} hidden XP. A member can receive only one reward per day.`, inline: false },
       { name: "🛠️ Staff Setup", value: "`/setup` - Open the full button panel\n`/nexus prefix` - Change rank shortcut prefix\n`/xp set-level` - Set a member level", inline: false },
       { name: "🚫 Jail System", value: "When the jail role is added, Nexus resets that member to level 0 and blocks XP while they remain jailed. When unjailed, they start again from the beginning.", inline: false },
@@ -242,11 +303,20 @@ async function handleHelp(interaction: ChatInputCommandInteraction) {
 export async function handleButtonInteraction(interaction: ButtonInteraction) {
   if (!interaction.guild) return;
   if (interaction.customId.startsWith("nexus_panel:")) return openSetupModal(interaction, interaction.customId.split(":")[1]);
+  if (interaction.customId.startsWith("nexus_stats:")) {
+    const [, rawView, rawPage] = interaction.customId.split(":");
+    return sendStats(interaction, normalizeStatsView(rawView), Math.max(1, Number(rawPage) || 1));
+  }
   if (!interaction.customId.startsWith("nexus_top:")) return;
   const [, rawType, rawPage] = interaction.customId.split(":");
   const type = normalizeType(rawType);
   const page = Math.max(1, Number(rawPage) || 1);
   return sendTop(interaction, type, page);
+}
+
+export async function handleStringSelectInteraction(interaction: StringSelectMenuInteraction) {
+  if (!interaction.guild || interaction.customId !== "nexus_stats_select") return;
+  return sendStats(interaction, normalizeStatsView(interaction.values[0]), 1);
 }
 
 export async function handleModalSubmit(interaction: ModalSubmitInteraction) {
@@ -306,6 +376,11 @@ export async function handlePrefixMessage(message: Message) {
     const pageArg = leaderboardTypes.includes(firstArg ?? "") ? args[2] : args[1];
     const page = Math.max(1, Number(pageArg ?? 1) || 1);
     await sendTop(message, type, page);
+    return;
+  }
+
+  if (command === "s" || command === "stats" || command === "statistics") {
+    await sendStats(message, "overview", 1);
     return;
   }
 

@@ -35,7 +35,7 @@ export type UserStats = {
 export type LeaderboardType = "overall" | "text" | "voice" | "messages";
 
 type DailyStats = { guildId: string; userId: string; day: string; textMessages: number; voiceSeconds: number; textXp: number; voiceXp: number };
-type ChannelStats = { guildId: string; channelId: string; kind: "text" | "voice"; textMessages: number; voiceSeconds: number };
+export type ChannelStats = { guildId: string; channelId: string; kind: "text" | "voice"; textMessages: number; voiceSeconds: number };
 export type RewardGrant = { guildId: string; targetUserId: string; giverUserId: string; day: string; amount: number; createdAt: string };
 
 type Store = {
@@ -185,6 +185,15 @@ export function countUsers(guildId: string) {
   return Object.values(store.users).filter((u) => u.guildId === guildId).length;
 }
 
+export function getChannelLeaderboard(guildId: string, kind: "text" | "voice", limit: number, offset: number): ChannelStats[] {
+  const score = (c: ChannelStats) => kind === "voice" ? c.voiceSeconds : c.textMessages;
+  return Object.values(store.channels).filter((c) => c.guildId === guildId && c.kind === kind).sort((a, b) => score(b) - score(a)).slice(offset, offset + limit);
+}
+
+export function countChannels(guildId: string, kind?: "text" | "voice") {
+  return Object.values(store.channels).filter((c) => c.guildId === guildId && (!kind || c.kind === kind)).length;
+}
+
 export function getRewards(guildId: string) {
   return store.rewards.filter((r) => r.guildId === guildId).sort((a, b) => a.level - b.level);
 }
@@ -205,6 +214,14 @@ export function hasIgnoredRole(guildId: string, roleIds: string[]) {
 
 export function isIgnoredChannel(guildId: string, channelId: string, kind: "text" | "voice") {
   return store.ignoredChannels.some((c) => c.guildId === guildId && c.channelId === channelId && (c.kind === "all" || c.kind === kind));
+}
+
+export function getIgnoredRoles(guildId: string) {
+  return store.ignoredRoles.filter((r) => r.guildId === guildId).map((r) => r.roleId);
+}
+
+export function getIgnoredChannels(guildId: string) {
+  return store.ignoredChannels.filter((c) => c.guildId === guildId).sort((a, b) => a.kind.localeCompare(b.kind) || a.channelId.localeCompare(b.channelId));
 }
 
 export function toggleList(table: "ignored_channels" | "ignored_roles" | "manager_roles" | "reward_giver_roles", guildId: string, id: string, enabled: boolean, kind = "all") {

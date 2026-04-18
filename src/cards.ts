@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { AttachmentBuilder, Guild, GuildMember } from "discord.js";
-import type { LeaderboardType, UserStats } from "./db.js";
-import { countUsers, getRanks } from "./db.js";
+import type { ChannelStats, LeaderboardType, UserStats } from "./db.js";
+import { countChannels, countUsers, getRanks } from "./db.js";
 import { progressForLevel, totalXp } from "./leveling.js";
 
 const W = 1000;
@@ -135,6 +135,8 @@ function topHeader(type: LeaderboardType) {
   return "Level";
 }
 
+export type StatsView = "overview" | "message_members" | "voice_members" | "message_channels" | "voice_channels";
+
 export async function topCard(guild: Guild, type: LeaderboardType, page: number, users: UserStats[]) {
   const title = type === "voice" ? "Voice Leaderboard" : type === "text" ? "Text Leaderboard" : type === "messages" ? "Messages Leaderboard" : "Overall Leaderboard";
   const total = countUsers(guild.id);
@@ -155,9 +157,9 @@ export async function topCard(guild: Guild, type: LeaderboardType, page: number,
     <circle cx="78" cy="72" r="34" fill="#050814" stroke="${purple}" stroke-width="3"/>
     <text x="125" y="67" font-family="Arial, sans-serif" font-size="37" font-weight="900" fill="${textMain}">${esc(title)}</text>
     <text x="125" y="98" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="${textSoft}">Stats of ${esc(guildName)}</text>
-    <rect x="835" y="42" width="110" height="58" rx="12" fill="#081026" stroke="#253b7a"/>
-    <text x="890" y="67" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="900" fill="#fff">Page ${safePage}/${totalPages}</text>
-    <text x="890" y="91" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="${textSoft}">Tracked: ${compact(total)}</text>
+    <rect x="835" y="28" width="110" height="54" rx="12" fill="#081026" stroke="#253b7a"/>
+    <text x="890" y="51" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="900" fill="#fff">Page ${safePage}/${totalPages}</text>
+    <text x="890" y="73" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="${textSoft}">Tracked: ${compact(total)}</text>
     <rect x="55" y="122" width="890" height="1" fill="#253b7a"/>
     <text x="850" y="112" text-anchor="end" font-family="Arial, sans-serif" font-size="17" font-weight="900" fill="${textSoft}">${topHeader(type)}</text>
     ${rows}
@@ -169,4 +171,65 @@ export async function topCard(guild: Guild, type: LeaderboardType, page: number,
   const rowAvatars = await Promise.all(users.map((u, i) => avatarComposite(u.avatarUrl, 165, 151 + i * 52, 30)));
   composites.push(...rowAvatars.filter(Boolean));
   return new AttachmentBuilder(await render(svg, composites), { name: "nexus-top.png" });
+}
+
+function statsTitle(view: StatsView) {
+  if (view === "message_members") return "Top Message Members";
+  if (view === "voice_members") return "Top Voice Members";
+  if (view === "message_channels") return "Top Message Channels";
+  if (view === "voice_channels") return "Top Voice Channels";
+  return "Overview";
+}
+
+function statsValue(view: StatsView, item: UserStats | ChannelStats) {
+  if ("userId" in item) {
+    if (view === "voice_members") return hours(item.voiceSeconds);
+    return compact(item.textMessages);
+  }
+  if (view === "voice_channels") return hours(item.voiceSeconds);
+  return compact(item.textMessages);
+}
+
+function statsName(guild: Guild, view: StatsView, item: UserStats | ChannelStats) {
+  if ("userId" in item) return cleanLabel(item.username, "member");
+  const channel = guild.channels.cache.get(item.channelId);
+  return cleanLabel(channel?.name ?? `Channel ${item.channelId.slice(-4)}`, "channel");
+}
+
+export async function statsCard(guild: Guild, view: StatsView, page: number, users: UserStats[], channels: ChannelStats[]) {
+  const items = view === "message_channels" || view === "voice_channels" ? channels : users;
+  const total = view === "message_channels" ? countChannels(guild.id, "text") : view === "voice_channels" ? countChannels(guild.id, "voice") : countUsers(guild.id);
+  const totalPages = Math.max(1, Math.ceil(total / 10));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const guildName = serverName(guild.name);
+  const overviewItems = [
+    ["Top Message Members", `${countUsers(guild.id)} tracked members`],
+    ["Top Voice Members", "Voice time ranking"],
+    ["Top Message Channels", `${countChannels(guild.id, "text")} text channels`],
+    ["Top Voice Channels", `${countChannels(guild.id, "voice")} voice channels`],
+  ];
+  const overview = overviewItems.map((item, i) => {
+    const y = 165 + i * 92;
+    return `<rect x="70" y="${y}" width="860" height="70" rx="15" fill="#121827" stroke="#2a3552"/><text x="105" y="${y + 31}" font-family="Arial, sans-serif" font-size="25" font-weight="900" fill="${textMain}">${esc(item[0])}</text><text x="105" y="${y + 55}" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">${esc(item[1])}</text><text x="890" y="${y + 45}" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" fill="${lavender}">›</text>`;
+  }).join("");
+  const rows = items.map((item, i) => {
+    const rank = (safePage - 1) * 10 + i + 1;
+    const y = 145 + i * 46;
+    const name = statsName(guild, view, item);
+    const value = statsValue(view, item);
+    return `<rect x="55" y="${y}" width="890" height="38" rx="9" fill="${i % 2 ? "#242934" : "#30343d"}" opacity="0.98"/><rect x="55" y="${y}" width="58" height="38" rx="9" fill="#151922"/><text x="84" y="${y + 26}" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="900" fill="${textMain}">${rank}</text><text x="140" y="${y + 26}" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="${textMain}">${esc(name)}</text><rect x="770" y="${y + 7}" width="145" height="24" rx="6" fill="#1a1f2b"/><text x="842" y="${y + 26}" text-anchor="middle" font-family="Arial, sans-serif" font-size="19" font-weight="900" fill="${textMain}">${esc(value)}</text>`;
+  }).join("");
+  const svg = `<svg width="1000" height="650" viewBox="0 0 1000 650" xmlns="http://www.w3.org/2000/svg">
+    ${cardDefs(650)}
+    <rect x="25" y="20" width="950" height="595" rx="28" fill="#171a22" opacity="0.95" stroke="#2d3350" stroke-width="2"/>
+    <circle cx="76" cy="67" r="34" fill="#050814" stroke="${purple}" stroke-width="3"/>
+    <text x="125" y="61" font-family="Arial, sans-serif" font-size="34" font-weight="900" fill="${textMain}">${esc(guildName)}</text>
+    <text x="125" y="92" font-family="Arial, sans-serif" font-size="21" fill="${textSoft}">Nexus Top Statistics</text>
+    ${view === "overview" ? `<text x="55" y="133" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="${textMain}">Overview</text><rect x="55" y="145" width="890" height="1" fill="#2d3350"/>${overview}` : `<text x="55" y="133" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="${textMain}">${esc(statsTitle(view))}</text><rect x="810" y="93" width="120" height="46" rx="12" fill="#202533" stroke="#3a4264"/><text x="870" y="122" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="900" fill="${textMain}">Page ${safePage}/${totalPages}</text>${rows}<text x="55" y="620" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">Server Lookback: All time — Timezone: UTC</text><text x="930" y="620" text-anchor="end" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">Powered by Nexus</text>`}
+  </svg>`;
+  const composites: any[] = [];
+  const guildIcon = guild.iconURL?.({ extension: "png", size: 128 }) ?? null;
+  const icon = await avatarComposite(guildIcon, 42, 33, 68);
+  if (icon) composites.push(icon);
+  return new AttachmentBuilder(await render(svg, composites), { name: "nexus-stats.png" });
 }

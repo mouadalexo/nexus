@@ -86,13 +86,12 @@ export async function processVoiceMinute(member: GuildMember, channelId: string)
 }
 
 export async function applyRewards(member: GuildMember, newLevel: number) {
-  const config = getConfig(member.guild.id);
   const rewards = getRewards(member.guild.id);
   const eligible = rewards.filter((r) => r.level <= newLevel);
   if (!eligible.length) return [];
   const highestLevel = Math.max(...eligible.map((r) => r.level));
-  const toGive = config.stackRewards ? eligible : eligible.filter((r) => r.level === highestLevel);
-  const toRemove = config.stackRewards ? [] : rewards.filter((r) => r.level < highestLevel);
+  const toGive = eligible.filter((r) => r.level === highestLevel);
+  const toRemove = rewards.filter((r) => r.level < highestLevel);
   const added: string[] = [];
   for (const reward of toRemove) {
     if (member.roles.cache.has(reward.roleId)) await member.roles.remove(reward.roleId).catch(() => null);
