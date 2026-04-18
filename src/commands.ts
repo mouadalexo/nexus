@@ -1,6 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuInteraction, TextInputBuilder, TextInputStyle } from "discord.js";
 import { env } from "./config.js";
-import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, getIgnoredChannels, getIgnoredRoles, getChannelLeaderboard, countChannels, type LeaderboardType } from "./db.js";
+import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, removeReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, getIgnoredChannels, getIgnoredRoles, getChannelLeaderboard, countChannels, type LeaderboardType } from "./db.js";
 import { rankCard, levelCard, topCard, statsCard, type StatsView } from "./cards.js";
 import { addRewardXp, applyRewards, canManageLevels, setLevel } from "./leveling.js";
 
@@ -157,18 +157,28 @@ function setupRows() {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("nexus_panel:view").setLabel("🌌 View Setup").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("nexus_panel:reward_system").setLabel("🎁 Reward Giver").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("nexus_panel:jail_role").setLabel("🚫 Jail Role").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("nexus_panel:jail_role").setLabel("Set Jail").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("nexus_panel:remove_jail_role").setLabel("Remove Jail").setStyle(ButtonStyle.Secondary),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("nexus_panel:level_message").setLabel("📣 Level Message").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("nexus_panel:level_channel").setLabel("📍 Level Channel").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:remove_level_channel").setLabel("Remove Level Channel").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("nexus_panel:xp_rates").setLabel("⚡ XP Rates").setStyle(ButtonStyle.Secondary),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("nexus_panel:add_reward").setLabel("🏅 Level Reward").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("nexus_panel:ignore_role").setLabel("🙈 Ignore Role").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("nexus_panel:ignore_channel").setLabel("🔇 Ignore Channel").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("nexus_panel:event_stage").setLabel("🎤 Event Voice").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("nexus_panel:add_reward").setLabel("Add Level Reward").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("nexus_panel:remove_reward").setLabel("Remove Level Reward").setStyle(ButtonStyle.Danger),
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("nexus_panel:add_ignore_role").setLabel("Add Ignored Role").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:remove_ignore_role").setLabel("Remove Ignored Role").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:add_ignore_channel").setLabel("Add Ignored Channel").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:remove_ignore_channel").setLabel("Remove Ignored Channel").setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("nexus_panel:add_event_stage").setLabel("Add Event Voice").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("nexus_panel:remove_event_stage").setLabel("Remove Event Voice").setStyle(ButtonStyle.Secondary),
     ),
   ];
 }
@@ -176,7 +186,8 @@ function setupRows() {
 function rewardRows() {
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId("nexus_panel:reward_amount").setLabel("💎 Set Amount").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("nexus_panel:reward_role").setLabel("Reward Giver Role").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("nexus_panel:add_reward_role").setLabel("Add Role").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("nexus_panel:remove_reward_role").setLabel("Remove Role").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("nexus_panel:view").setLabel("⬅️ Back to Setup").setStyle(ButtonStyle.Secondary),
   )];
 }
@@ -207,15 +218,28 @@ async function openSetupModal(interaction: ButtonInteraction, action: string) {
   if (action === "view") return interaction.update({ embeds: [setupEmbed(interaction.guild!.id)], components: setupRows() });
   if (action === "reward_system") return interaction.update({ embeds: [rewardEmbed(interaction.guild!.id)], components: rewardRows() });
   if (action === "reward_amount") return interaction.showModal(modal("nexus_modal:reward_amount", "Set Daily Reward Amount", [textInput("amount", "Reward amount", "75") ]));
-  if (action === "reward_role") return interaction.showModal(modal("nexus_modal:reward_role", "Reward Giver Role", [textInput("role", "Role ID or mention", "@Reward Giver or 123456789"), textInput("enabled", "Enable this role?", "true or false") ]));
+  if (action === "add_reward_role") return interaction.showModal(modal("nexus_modal:add_reward_role", "Add Reward Giver Role", [textInput("role", "Role ID or mention", "@Reward Giver or 123456789")]));
+  if (action === "remove_reward_role") return interaction.showModal(modal("nexus_modal:remove_reward_role", "Remove Reward Giver Role", [textInput("role", "Role ID or mention", "@Reward Giver or 123456789")]));
   if (action === "jail_role") return interaction.showModal(modal("nexus_modal:jail_role", "Set Jail Role", [textInput("role", "Jail role ID or mention", "@Jailed or 123456789. Leave 0 to remove") ]));
+  if (action === "remove_jail_role") {
+    updateConfig(interaction.guild!.id, { jailRoleId: null });
+    return interaction.update({ embeds: [setupEmbed(interaction.guild!.id)], components: setupRows() });
+  }
   if (action === "level_message") return interaction.showModal(modal("nexus_modal:level_message", "Set Level Up Message", [textInput("message", "Message", "Use {user} {username} {level} {rank}")]));
   if (action === "level_channel") return interaction.showModal(modal("nexus_modal:level_channel", "Set Level Up Channel", [textInput("channel", "Channel ID or mention", "#levels or 123456789")]));
+  if (action === "remove_level_channel") {
+    updateConfig(interaction.guild!.id, { levelupChannelId: null });
+    return interaction.update({ embeds: [setupEmbed(interaction.guild!.id)], components: setupRows() });
+  }
   if (action === "xp_rates") return interaction.showModal(modal("nexus_modal:xp_rates", "Set XP Rates", [textInput("textMin", "Text minimum", "8"), textInput("textMax", "Text maximum", "15"), textInput("cooldown", "Text cooldown seconds", "90"), textInput("voice", "Voice per minute", "12")]));
   if (action === "add_reward") return interaction.showModal(modal("nexus_modal:add_reward", "Add Level Role Reward", [textInput("level", "Level", "10"), textInput("role", "Role ID or mention", "@Role or 123456789")]));
-  if (action === "ignore_role") return interaction.showModal(modal("nexus_modal:ignore_role", "Ignore Role", [textInput("role", "Role ID or mention", "@Role or 123456789"), textInput("enabled", "Enable ignore?", "true or false")]));
-  if (action === "ignore_channel") return interaction.showModal(modal("nexus_modal:ignore_channel", "Ignore Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789"), textInput("kind", "Kind", "all, text, or voice"), textInput("enabled", "Enable ignore?", "true or false")]));
-  if (action === "event_stage") return interaction.showModal(modal("nexus_modal:event_stage", "Setup Event Stage Voice", [textInput("channel", "Voice channel ID or mention", "voice channel or 123456789"), textInput("multiplier", "XP multiplier", "1, 2, or 3")]));
+  if (action === "remove_reward") return interaction.showModal(modal("nexus_modal:remove_reward", "Remove Level Role Reward", [textInput("level", "Level", "10"), textInput("role", "Role ID or mention", "@Role or 123456789", false)]));
+  if (action === "add_ignore_role") return interaction.showModal(modal("nexus_modal:add_ignore_role", "Add Ignored Role", [textInput("role", "Role ID or mention", "@Role or 123456789")]));
+  if (action === "remove_ignore_role") return interaction.showModal(modal("nexus_modal:remove_ignore_role", "Remove Ignored Role", [textInput("role", "Role ID or mention", "@Role or 123456789")]));
+  if (action === "add_ignore_channel") return interaction.showModal(modal("nexus_modal:add_ignore_channel", "Add Ignored Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789"), textInput("kind", "Kind", "all, text, or voice")]));
+  if (action === "remove_ignore_channel") return interaction.showModal(modal("nexus_modal:remove_ignore_channel", "Remove Ignored Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789")]));
+  if (action === "add_event_stage") return interaction.showModal(modal("nexus_modal:add_event_stage", "Add Event Voice", [textInput("channel", "Voice channel ID or mention", "voice channel or 123456789"), textInput("multiplier", "XP multiplier", "2 or 3")]));
+  if (action === "remove_event_stage") return interaction.showModal(modal("nexus_modal:remove_event_stage", "Remove Event Voice", [textInput("channel", "Voice channel ID or mention", "voice channel or 123456789")]));
 }
 
 async function handleSetupModal(interaction: ModalSubmitInteraction) {
@@ -223,9 +247,9 @@ async function handleSetupModal(interaction: ModalSubmitInteraction) {
   const action = interaction.customId.split(":")[1];
   const guildId = interaction.guild.id;
   if (action === "reward_amount") updateConfig(guildId, { rewardXpAmount: Math.max(1, Number(interaction.fields.getTextInputValue("amount")) || 75) });
-  if (action === "reward_role") {
+  if (action === "add_reward_role" || action === "remove_reward_role") {
     const roleId = extractId(interaction.fields.getTextInputValue("role"));
-    if (roleId) toggleList("reward_giver_roles", guildId, roleId, boolValue(interaction.fields.getTextInputValue("enabled")));
+    if (roleId) toggleList("reward_giver_roles", guildId, roleId, action === "add_reward_role");
   }
   if (action === "jail_role") {
     const roleId = extractId(interaction.fields.getTextInputValue("role"));
@@ -244,21 +268,34 @@ async function handleSetupModal(interaction: ModalSubmitInteraction) {
     const roleId = extractId(interaction.fields.getTextInputValue("role"));
     if (roleId) setReward(guildId, Math.max(1, Number(interaction.fields.getTextInputValue("level")) || 1), roleId);
   }
-  if (action === "ignore_role") {
+  if (action === "remove_reward") {
+    const level = Math.max(1, Number(interaction.fields.getTextInputValue("level")) || 1);
     const roleId = extractId(interaction.fields.getTextInputValue("role"));
-    if (roleId) toggleList("ignored_roles", guildId, roleId, boolValue(interaction.fields.getTextInputValue("enabled")));
+    removeReward(guildId, level, roleId || undefined);
   }
-  if (action === "ignore_channel") {
+  if (action === "add_ignore_role" || action === "remove_ignore_role") {
+    const roleId = extractId(interaction.fields.getTextInputValue("role"));
+    if (roleId) toggleList("ignored_roles", guildId, roleId, action === "add_ignore_role");
+  }
+  if (action === "add_ignore_channel") {
     const channelId = extractId(interaction.fields.getTextInputValue("channel"));
     const kindInput = interaction.fields.getTextInputValue("kind").trim().toLowerCase();
     const kind = ["text", "voice", "all"].includes(kindInput) ? kindInput : "all";
-    if (channelId) toggleList("ignored_channels", guildId, channelId, boolValue(interaction.fields.getTextInputValue("enabled")), kind);
+    if (channelId) toggleList("ignored_channels", guildId, channelId, true, kind);
   }
-  if (action === "event_stage") {
+  if (action === "remove_ignore_channel") {
+    const channelId = extractId(interaction.fields.getTextInputValue("channel"));
+    if (channelId) toggleList("ignored_channels", guildId, channelId, false);
+  }
+  if (action === "add_event_stage") {
     const channelId = extractId(interaction.fields.getTextInputValue("channel"));
     if (channelId) setEventVoiceChannel(guildId, channelId, Math.max(1, Math.min(3, Number(interaction.fields.getTextInputValue("multiplier")) || 1)));
   }
-  const isRewardAction = action === "reward_amount" || action === "reward_role";
+  if (action === "remove_event_stage") {
+    const channelId = extractId(interaction.fields.getTextInputValue("channel"));
+    if (channelId) setEventVoiceChannel(guildId, channelId, 1);
+  }
+  const isRewardAction = action === "reward_amount" || action === "add_reward_role" || action === "remove_reward_role";
   return interaction.reply({ content: "Nexus setup updated.", embeds: [isRewardAction ? rewardEmbed(guildId) : setupEmbed(guildId)], components: isRewardAction ? rewardRows() : setupRows(), ephemeral: true });
 }
 
