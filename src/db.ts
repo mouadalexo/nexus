@@ -45,6 +45,7 @@ type Store = {
   channels: Record<string, ChannelStats>;
   rewards: { guildId: string; level: number; roleId: string }[];
   ignoredChannels: { guildId: string; channelId: string; kind: string }[];
+  blockedCommandChannels: { guildId: string; channelId: string }[];
   ignoredRoles: { guildId: string; roleId: string }[];
   managerRoles: { guildId: string; roleId: string }[];
   eventVoiceChannels: EventVoiceChannel[];
@@ -52,7 +53,7 @@ type Store = {
   rewardGrants: RewardGrant[];
 };
 
-const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], ignoredRoles: [], managerRoles: [], eventVoiceChannels: [], rewardGiverRoles: [], rewardGrants: [] });
+const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], blockedCommandChannels: [], ignoredRoles: [], managerRoles: [], eventVoiceChannels: [], rewardGiverRoles: [], rewardGrants: [] });
 fs.mkdirSync(path.dirname(env.databasePath), { recursive: true });
 const filePath = env.databasePath.endsWith(".sqlite") ? env.databasePath.replace(/\.sqlite$/, ".json") : env.databasePath;
 let store: Store = emptyStore();
@@ -222,6 +223,20 @@ export function getIgnoredRoles(guildId: string) {
 
 export function getIgnoredChannels(guildId: string) {
   return store.ignoredChannels.filter((c) => c.guildId === guildId).sort((a, b) => a.kind.localeCompare(b.kind) || a.channelId.localeCompare(b.channelId));
+}
+
+export function isCommandBlockedChannel(guildId: string, channelId: string) {
+  return store.blockedCommandChannels.some((c) => c.guildId === guildId && c.channelId === channelId);
+}
+
+export function getBlockedCommandChannels(guildId: string) {
+  return store.blockedCommandChannels.filter((c) => c.guildId === guildId).map((c) => c.channelId);
+}
+
+export function setCommandBlockedChannel(guildId: string, channelId: string, enabled: boolean) {
+  store.blockedCommandChannels = store.blockedCommandChannels.filter((c) => !(c.guildId === guildId && c.channelId === channelId));
+  if (enabled) store.blockedCommandChannels.push({ guildId, channelId });
+  saveSoon();
 }
 
 export function toggleList(table: "ignored_channels" | "ignored_roles" | "manager_roles" | "reward_giver_roles", guildId: string, id: string, enabled: boolean, kind = "all") {

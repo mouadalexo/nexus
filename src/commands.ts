@@ -1,6 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuInteraction, TextInputBuilder, TextInputStyle } from "discord.js";
 import { env } from "./config.js";
-import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, removeReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, getIgnoredChannels, getIgnoredRoles, getChannelLeaderboard, countChannels, type LeaderboardType } from "./db.js";
+import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, removeReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, getIgnoredChannels, getIgnoredRoles, getChannelLeaderboard, countChannels, isCommandBlockedChannel, getBlockedCommandChannels, setCommandBlockedChannel, type LeaderboardType } from "./db.js";
 import { rankCard, levelCard, topCard, statsCard, type StatsView } from "./cards.js";
 import { addRewardXp, applyRewards, canManageLevels, setLevel } from "./leveling.js";
 
@@ -113,6 +113,7 @@ function setupEmbed(guildId: string) {
   const rewardGivers = getRewardGiverRoles(guildId);
   const ignoredRoles = getIgnoredRoles(guildId);
   const ignoredChannels = getIgnoredChannels(guildId);
+  const blockedCommandChannels = getBlockedCommandChannels(guildId);
   return new EmbedBuilder()
     .setColor(brand)
     .setTitle("🌌 Current Nexus Setup")
@@ -126,6 +127,7 @@ function setupEmbed(guildId: string) {
       { name: "🚫 Jail", value: config.jailRoleId ? `<@&${config.jailRoleId}> resets level to 0 and blocks XP.` : "No jail role set.", inline: false },
       { name: "🙈 Ignored Roles", value: ignoredRoles.length ? ignoredRoles.map((r) => `<@&${r}>`).join(" ") : "none", inline: false },
       { name: "🔇 Ignored Channels", value: ignoredChannels.length ? ignoredChannels.map((c) => `<#${c.channelId}> (${c.kind})`).join("\n").slice(0, 900) : "none", inline: false },
+      { name: "⛔ Blocked Command Channels", value: blockedCommandChannels.length ? blockedCommandChannels.map((c) => `<#${c}>`).join(" ") : "none", inline: false },
       { name: "🎤 Event Voice", value: events.length ? events.map((e) => `• <#${e.channelId}> x${e.multiplier}`).join("\n") : "none", inline: false },
       { name: "🛠️ Managers", value: managers.length ? managers.map((r) => `<@&${r}>`).join(" ") : "Admins only", inline: false },
     );
@@ -179,6 +181,8 @@ function setupRows() {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("nexus_panel:add_event_stage").setLabel("Add Event Voice").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("nexus_panel:remove_event_stage").setLabel("Remove Event Voice").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:add_blocked_command_channel").setLabel("Block Cmd Channel").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("nexus_panel:remove_blocked_command_channel").setLabel("Unblock Cmd Channel").setStyle(ButtonStyle.Secondary),
     ),
   ];
 }
@@ -240,6 +244,8 @@ async function openSetupModal(interaction: ButtonInteraction, action: string) {
   if (action === "remove_ignore_channel") return interaction.showModal(modal("nexus_modal:remove_ignore_channel", "Remove Ignored Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789")]));
   if (action === "add_event_stage") return interaction.showModal(modal("nexus_modal:add_event_stage", "Add Event Voice", [textInput("channel", "Voice channel ID or mention", "voice channel or 123456789"), textInput("multiplier", "XP multiplier", "2 or 3")]));
   if (action === "remove_event_stage") return interaction.showModal(modal("nexus_modal:remove_event_stage", "Remove Event Voice", [textInput("channel", "Voice channel ID or mention", "voice channel or 123456789")]));
+  if (action === "add_blocked_command_channel") return interaction.showModal(modal("nexus_modal:add_blocked_command_channel", "Block Command Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789")]));
+  if (action === "remove_blocked_command_channel") return interaction.showModal(modal("nexus_modal:remove_blocked_command_channel", "Unblock Command Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789")]));
 }
 
 async function handleSetupModal(interaction: ModalSubmitInteraction) {
@@ -294,6 +300,10 @@ async function handleSetupModal(interaction: ModalSubmitInteraction) {
   if (action === "remove_event_stage") {
     const channelId = extractId(interaction.fields.getTextInputValue("channel"));
     if (channelId) setEventVoiceChannel(guildId, channelId, 1);
+  }
+  if (action === "add_blocked_command_channel" || action === "remove_blocked_command_channel") {
+    const channelId = extractId(interaction.fields.getTextInputValue("channel"));
+    if (channelId) setCommandBlockedChannel(guildId, channelId, action === "add_blocked_command_channel");
   }
   const isRewardAction = action === "reward_amount" || action === "add_reward_role" || action === "remove_reward_role";
   return interaction.reply({ content: "Nexus setup updated.", embeds: [isRewardAction ? rewardEmbed(guildId) : setupEmbed(guildId)], components: isRewardAction ? rewardRows() : setupRows(), ephemeral: true });
@@ -376,6 +386,19 @@ async function memberFromArg(message: Message, arg: string | undefined) {
   return message.member;
 }
 
+function hasOnlyMentionOrIdArg(args: string[]) {
+  if (args.length === 1) return true;
+  if (args.length !== 2) return false;
+  return /^<@!?\d{15,25}>$/.test(args[1]) || /^\d{15,25}$/.test(args[1]);
+}
+
+function hasOnlyTopArgs(args: string[]) {
+  if (args.length === 1) return true;
+  const typeArg = args[1]?.toLowerCase();
+  if (leaderboardTypes.includes(typeArg ?? "")) return args.length === 2 || (args.length === 3 && /^\d+$/.test(args[2]));
+  return args.length === 2 && /^\d+$/.test(args[1]);
+}
+
 export async function handlePrefixMessage(message: Message) {
   if (!message.guild || message.author.bot) return;
   const config = getConfig(message.guild.id);
@@ -384,8 +407,12 @@ export async function handlePrefixMessage(message: Message) {
   const args = trimmed.split(/\s+/g);
   const command = args[0]?.toLowerCase();
   const rankAliases = new Set([config.prefix.toLowerCase(), "r", "rank"]);
+  const isMemberCommand = rankAliases.has(command) || command === "l" || command === "level" || command === "s" || command === "stats" || command === "statistics" || command === "top" || command === "leaderboard";
+
+  if (isMemberCommand && isCommandBlockedChannel(message.guild.id, message.channelId)) return;
 
   if (rankAliases.has(command)) {
+    if (!hasOnlyMentionOrIdArg(args) && args[1]?.toLowerCase() !== "help") return;
     if (args[1]?.toLowerCase() === "help") {
       await message.reply({ embeds: [buildHelpEmbed(message.guild.id)] });
       return;
@@ -399,6 +426,7 @@ export async function handlePrefixMessage(message: Message) {
   }
 
   if (command === "l" || command === "level") {
+    if (!hasOnlyMentionOrIdArg(args)) return;
     const member = await memberFromArg(message, args[1]);
     if (!member) return;
     const stats = ensureUser(message.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
@@ -408,6 +436,7 @@ export async function handlePrefixMessage(message: Message) {
   }
 
   if (command === "top" || command === "leaderboard") {
+    if (!hasOnlyTopArgs(args)) return;
     const firstArg = args[1]?.toLowerCase();
     const type = normalizeType(firstArg);
     const pageArg = leaderboardTypes.includes(firstArg ?? "") ? args[2] : args[1];
@@ -417,6 +446,7 @@ export async function handlePrefixMessage(message: Message) {
   }
 
   if (command === "s" || command === "stats" || command === "statistics") {
+    if (args.length !== 1) return;
     await sendStats(message, "overview", 1);
     return;
   }
