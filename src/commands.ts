@@ -1,10 +1,10 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
 import { env } from "./config.js";
-import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, type LeaderboardType } from "./db.js";
+import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, type LeaderboardType } from "./db.js";
 import { rankCard, levelCard, topCard } from "./cards.js";
-import { canManageLevels, setLevel } from "./leveling.js";
+import { addRewardXp, canManageLevels, setLevel } from "./leveling.js";
 
-const brand = 0x4f8dff;
+const brand = 0x6f55ff;
 const leaderboardTypes = ["overall", "text", "voice", "messages"];
 
 export async function registerSlashCommands(client: Client) {
@@ -13,7 +13,7 @@ export async function registerSlashCommands(client: Client) {
     new SlashCommandBuilder().setName("nexus").setDescription("Configure Nexus essentials").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
       .addSubcommand((sub) => sub.setName("prefix").setDescription("Set rank text command prefix").addStringOption((o) => o.setName("value").setDescription("Example: R").setRequired(true).setMaxLength(8))),
     new SlashCommandBuilder().setName("setup").setDescription("Open the Nexus server setup panel").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
-    new SlashCommandBuilder().setName("help").setDescription("Show all Nexus text commands and setup guide"),
+    new SlashCommandBuilder().setName("help").setDescription("Show the Nexus command guide"),
     new SlashCommandBuilder().setName("xp").setDescription("Edit Nexus levels").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
       .addSubcommand((sub) => sub.setName("set-level").setDescription("Set a member level").addUserOption((o) => o.setName("user").setDescription("User").setRequired(true)).addIntegerOption((o) => o.setName("level").setDescription("Target level").setMinValue(0).setMaxValue(500).setRequired(true))),
   ].map((c) => c.toJSON());
@@ -53,42 +53,72 @@ function requireManager(member: GuildMember) {
   return canManageLevels(member);
 }
 
+function canGiveReward(member: GuildMember) {
+  return requireManager(member) || hasRewardGiverRole(member.guild.id, member.roles.cache.map((r) => r.id));
+}
+
 function setupEmbed(guildId: string) {
   const config = getConfig(guildId);
   const rewards = getRewards(guildId);
   const managers = getManagerRoles(guildId);
   const events = getEventVoiceChannels(guildId);
+  const rewardGivers = getRewardGiverRoles(guildId);
   return new EmbedBuilder()
     .setColor(brand)
-    .setTitle("Nexus Setup Panel")
-    .setDescription("Use the buttons below to manage server leveling in one place.")
+    .setTitle("🌌 Nexus Setup Panel")
+    .setDescription("Manage leveling, rewards, jail, XP rates, and messages from one clear panel. Use the colored buttons below to update one section at a time.")
     .addFields(
-      { name: "Text Commands", value: "`R` rank\n`L` level\n`Top` overall leaderboard", inline: true },
-      { name: "Rates", value: `Text ${config.textMinXp}-${config.textMaxXp} / ${config.textCooldownSeconds}s\nVoice ${config.voiceXpPerMinute}/min`, inline: true },
-      { name: "Level Up", value: `Channel: ${config.levelupChannelId ? `<#${config.levelupChannelId}>` : "default"}\nMessage: ${config.levelupMessage.slice(0, 180)}`, inline: false },
-      { name: "Rewards", value: rewards.length ? rewards.map((r) => `Level ${r.level} -> <@&${r.roleId}>`).join("\n").slice(0, 900) : "No rewards set", inline: false },
-      { name: "Manager Roles", value: managers.length ? managers.map((r) => `<@&${r}>`).join(" ") : "Admins only", inline: false },
-      { name: "Event Stage Voice", value: events.length ? events.map((e) => `<#${e.channelId}> = x${e.multiplier}`).join("\n") : "No boosted voice channels", inline: false },
+      { name: "📌 Member Commands", value: "`R` rank\n`L` level\n`Top` overall leaderboard\n`Reward @user` daily reward", inline: true },
+      { name: "⚡ Leveling Speed", value: `Text ${config.textMinXp}-${config.textMaxXp} / ${config.textCooldownSeconds}s\nVoice ${config.voiceXpPerMinute}/min\nCurve: easy early, harder later`, inline: true },
+      { name: "📣 Level Up Message", value: `Channel: ${config.levelupChannelId ? `<#${config.levelupChannelId}>` : "default"}\n${config.levelupMessage.slice(0, 180)}`, inline: false },
+      { name: "🎁 Reward Giver", value: `Daily reward: ${config.rewardXpAmount} hidden XP\nRoles: ${rewardGivers.length ? rewardGivers.map((r) => `<@&${r}>`).join(" ") : "No reward giver roles"}\nLimit: one reward per member per day`, inline: false },
+      { name: "🚫 Jail Role", value: config.jailRoleId ? `<@&${config.jailRoleId}> resets members to level 0 and blocks XP while jailed.` : "No jail role set.", inline: false },
+      { name: "🏅 Level Rewards", value: rewards.length ? rewards.map((r) => `Level ${r.level} -> <@&${r.roleId}>`).join("\n").slice(0, 900) : "No level rewards set", inline: false },
+      { name: "🛠️ Managers / Event Stage", value: `Managers: ${managers.length ? managers.map((r) => `<@&${r}>`).join(" ") : "Admins only"}\nEvent voice: ${events.length ? events.map((e) => `<#${e.channelId}> x${e.multiplier}`).join(", ") : "none"}`, inline: false },
+    );
+}
+
+function rewardEmbed(guildId: string) {
+  const config = getConfig(guildId);
+  const roles = getRewardGiverRoles(guildId);
+  return new EmbedBuilder()
+    .setColor(0x2ecc71)
+    .setTitle("🎁 Reward Giver System")
+    .setDescription("Members with a reward giver role can type `Reward @user` to give the daily reward. A member can receive it only once per day, even if different reward givers try.")
+    .addFields(
+      { name: "💎 Reward amount", value: `${config.rewardXpAmount} hidden XP`, inline: true },
+      { name: "✅ Allowed roles", value: roles.length ? roles.map((r) => `<@&${r}>`).join(" ") : "No roles set yet", inline: true },
+      { name: "📝 How to use", value: "1. Add a reward giver role.\n2. Set the reward amount.\n3. Reward givers type `Reward @user`.\n4. Nexus blocks duplicate rewards for the same member that day.", inline: false },
     );
 }
 
 function setupRows() {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("nexus_panel:view").setLabel("View Setup").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("nexus_panel:level_message").setLabel("Level Message").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("nexus_panel:level_channel").setLabel("Level Channel").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:view").setLabel("🌌 View Setup").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("nexus_panel:reward_system").setLabel("🎁 Reward Giver").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("nexus_panel:jail_role").setLabel("🚫 Jail Role").setStyle(ButtonStyle.Danger),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("nexus_panel:xp_rates").setLabel("XP Rates").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("nexus_panel:add_reward").setLabel("Add Reward").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("nexus_panel:ignore_role").setLabel("Ignore Role").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:level_message").setLabel("📣 Level Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:level_channel").setLabel("📍 Level Channel").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:xp_rates").setLabel("⚡ XP Rates").setStyle(ButtonStyle.Secondary),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("nexus_panel:ignore_channel").setLabel("Ignore Channel").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("nexus_panel:event_stage").setLabel("Event Stage Voice").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("nexus_panel:add_reward").setLabel("🏅 Level Reward").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("nexus_panel:ignore_role").setLabel("🙈 Ignore Role").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:ignore_channel").setLabel("🔇 Ignore Channel").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:event_stage").setLabel("🎤 Event Voice").setStyle(ButtonStyle.Success),
     ),
   ];
+}
+
+function rewardRows() {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("nexus_panel:reward_amount").setLabel("💎 Set Amount").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("nexus_panel:reward_role").setLabel("Reward Giver Role").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("nexus_panel:view").setLabel("⬅️ Back to Setup").setStyle(ButtonStyle.Secondary),
+  )];
 }
 
 function textInput(id: string, label: string, placeholder: string, required = true) {
@@ -115,10 +145,14 @@ function boolValue(value: string) {
 async function openSetupModal(interaction: ButtonInteraction, action: string) {
   if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to use the setup panel.", ephemeral: true });
   if (action === "view") return interaction.update({ embeds: [setupEmbed(interaction.guild!.id)], components: setupRows() });
+  if (action === "reward_system") return interaction.update({ embeds: [rewardEmbed(interaction.guild!.id)], components: rewardRows() });
+  if (action === "reward_amount") return interaction.showModal(modal("nexus_modal:reward_amount", "Set Daily Reward Amount", [textInput("amount", "Reward amount", "75") ]));
+  if (action === "reward_role") return interaction.showModal(modal("nexus_modal:reward_role", "Reward Giver Role", [textInput("role", "Role ID or mention", "@Reward Giver or 123456789"), textInput("enabled", "Enable this role?", "true or false") ]));
+  if (action === "jail_role") return interaction.showModal(modal("nexus_modal:jail_role", "Set Jail Role", [textInput("role", "Jail role ID or mention", "@Jailed or 123456789. Leave 0 to remove") ]));
   if (action === "level_message") return interaction.showModal(modal("nexus_modal:level_message", "Set Level Up Message", [textInput("message", "Message", "Use {user} {username} {level} {rank}")]));
   if (action === "level_channel") return interaction.showModal(modal("nexus_modal:level_channel", "Set Level Up Channel", [textInput("channel", "Channel ID or mention", "#levels or 123456789")]));
   if (action === "xp_rates") return interaction.showModal(modal("nexus_modal:xp_rates", "Set XP Rates", [textInput("textMin", "Text minimum", "8"), textInput("textMax", "Text maximum", "15"), textInput("cooldown", "Text cooldown seconds", "90"), textInput("voice", "Voice per minute", "12")]));
-  if (action === "add_reward") return interaction.showModal(modal("nexus_modal:add_reward", "Add Level Reward", [textInput("level", "Level", "10"), textInput("role", "Role ID or mention", "@Role or 123456789")]));
+  if (action === "add_reward") return interaction.showModal(modal("nexus_modal:add_reward", "Add Level Role Reward", [textInput("level", "Level", "10"), textInput("role", "Role ID or mention", "@Role or 123456789")]));
   if (action === "ignore_role") return interaction.showModal(modal("nexus_modal:ignore_role", "Ignore Role", [textInput("role", "Role ID or mention", "@Role or 123456789"), textInput("enabled", "Enable ignore?", "true or false")]));
   if (action === "ignore_channel") return interaction.showModal(modal("nexus_modal:ignore_channel", "Ignore Channel", [textInput("channel", "Channel ID or mention", "#channel or 123456789"), textInput("kind", "Kind", "all, text, or voice"), textInput("enabled", "Enable ignore?", "true or false")]));
   if (action === "event_stage") return interaction.showModal(modal("nexus_modal:event_stage", "Setup Event Stage Voice", [textInput("channel", "Voice channel ID or mention", "voice channel or 123456789"), textInput("multiplier", "XP multiplier", "1, 2, or 3")]));
@@ -128,6 +162,15 @@ async function handleSetupModal(interaction: ModalSubmitInteraction) {
   if (!interaction.guild || !requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to update Nexus setup.", ephemeral: true });
   const action = interaction.customId.split(":")[1];
   const guildId = interaction.guild.id;
+  if (action === "reward_amount") updateConfig(guildId, { rewardXpAmount: Math.max(1, Number(interaction.fields.getTextInputValue("amount")) || 75) });
+  if (action === "reward_role") {
+    const roleId = extractId(interaction.fields.getTextInputValue("role"));
+    if (roleId) toggleList("reward_giver_roles", guildId, roleId, boolValue(interaction.fields.getTextInputValue("enabled")));
+  }
+  if (action === "jail_role") {
+    const roleId = extractId(interaction.fields.getTextInputValue("role"));
+    updateConfig(guildId, { jailRoleId: roleId && roleId !== "0" ? roleId : null });
+  }
   if (action === "level_message") updateConfig(guildId, { levelupMessage: interaction.fields.getTextInputValue("message").slice(0, 500) });
   if (action === "level_channel") updateConfig(guildId, { levelupChannelId: extractId(interaction.fields.getTextInputValue("channel")) || null });
   if (action === "xp_rates") {
@@ -155,7 +198,8 @@ async function handleSetupModal(interaction: ModalSubmitInteraction) {
     const channelId = extractId(interaction.fields.getTextInputValue("channel"));
     if (channelId) setEventVoiceChannel(guildId, channelId, Math.max(1, Math.min(3, Number(interaction.fields.getTextInputValue("multiplier")) || 1)));
   }
-  return interaction.reply({ content: "Nexus setup updated.", embeds: [setupEmbed(guildId)], components: setupRows(), ephemeral: true });
+  const isRewardAction = action === "reward_amount" || action === "reward_role";
+  return interaction.reply({ content: "Nexus setup updated.", embeds: [isRewardAction ? rewardEmbed(guildId) : setupEmbed(guildId)], components: isRewardAction ? rewardRows() : setupRows(), ephemeral: true });
 }
 
 async function handleNexus(interaction: ChatInputCommandInteraction) {
@@ -179,30 +223,13 @@ function buildHelpEmbed(guildId: string) {
   const config = getConfig(guildId);
   return new EmbedBuilder()
     .setColor(brand)
-    .setTitle("Nexus Leveling Bot Help")
-    .setDescription("Nexus uses text commands for member stats: R for rank, L for level, and Top for the overall leaderboard.")
+    .setTitle("✨ Nexus Leveling Guide")
+    .setDescription("A clean level system for Night Stars. Early levels are easy, higher levels become harder with a progressive curve.")
     .addFields(
-      {
-        name: "Member text commands",
-        value: [
-          "`R` or `R @user` - Shows the rank card.",
-          "`L` or `L @user` - Shows the detailed level card.",
-          "`Top` - Shows the overall level leaderboard.",
-          "`Top voice`, `Top text`, `Top messages` - Shows a specific leaderboard.",
-          "`Top 2` or `Top voice 2` - Opens a specific page.",
-          "`Help` or `R help` - Shows this guide."
-        ].join("\n"),
-        inline: false,
-      },
-      {
-        name: "Admin setup",
-        value: [
-          "`/setup` - Opens the button setup panel for rewards, ignored roles/channels, level-up message, event stage voice, and XP rates.",
-          "`/nexus prefix <value>` - Changes the rank shortcut prefix. Current: `" + config.prefix + "`.",
-          "`/xp set-level` - Sets a member level."
-        ].join("\n"),
-        inline: false,
-      }
+      { name: "📌 Member Commands", value: "`R` or `R @user` - Rank card\n`L` or `L @user` - Level card\n`Top` - Overall level leaderboard\n`Top voice`, `Top text`, `Top messages` - Other leaderboards", inline: false },
+      { name: "🎁 Reward Giver", value: `Reward givers type \`Reward @user\` to give ${config.rewardXpAmount} hidden XP. A member can receive only one reward per day.`, inline: false },
+      { name: "🛠️ Staff Setup", value: "`/setup` - Open the full button panel\n`/nexus prefix` - Change rank shortcut prefix\n`/xp set-level` - Set a member level", inline: false },
+      { name: "🚫 Jail System", value: "When the jail role is added, Nexus resets that member to level 0 and blocks XP while they remain jailed. When unjailed, they start again from the beginning.", inline: false },
     )
     .setFooter({ text: "Nexus - Night Stars Leveling" })
     .setTimestamp();
@@ -279,6 +306,21 @@ export async function handlePrefixMessage(message: Message) {
     const pageArg = leaderboardTypes.includes(firstArg ?? "") ? args[2] : args[1];
     const page = Math.max(1, Number(pageArg ?? 1) || 1);
     await sendTop(message, type, page);
+    return;
+  }
+
+  if (command === "reward") {
+    const giver = message.member;
+    if (!giver || !canGiveReward(giver)) return message.reply("You need a Reward Giver role to use this command.");
+    const target = await memberFromArg(message, args[1]);
+    if (!target || target.id === giver.id || target.user.bot) return message.reply("Mention one server member to reward.");
+    if (config.jailRoleId && target.roles.cache.has(config.jailRoleId)) return message.reply("That member is jailed, so they cannot receive rewards right now.");
+    const existing = getTodayRewardGrant(message.guild.id, target.id);
+    if (existing) return message.reply(`${target} already received today's reward.`);
+    const grant = recordRewardGrant(message.guild.id, target.id, giver.id, config.rewardXpAmount);
+    if (!grant) return message.reply(`${target} already received today's reward.`);
+    const level = addRewardXp(target, config.rewardXpAmount);
+    await message.reply(`${target} received today's reward and is now level ${level}.`);
     return;
   }
 

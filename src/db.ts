@@ -13,6 +13,8 @@ export type GuildConfig = {
   voiceXpPerMinute: number;
   stackRewards: number;
   ignoreMutedVoice: number;
+  rewardXpAmount: number;
+  jailRoleId: string | null;
 };
 
 export type EventVoiceChannel = { guildId: string; channelId: string; multiplier: number };
@@ -34,6 +36,8 @@ export type LeaderboardType = "overall" | "text" | "voice" | "messages";
 
 type DailyStats = { guildId: string; userId: string; day: string; textMessages: number; voiceSeconds: number; textXp: number; voiceXp: number };
 type ChannelStats = { guildId: string; channelId: string; kind: "text" | "voice"; textMessages: number; voiceSeconds: number };
+export type RewardGrant = { guildId: string; targetUserId: string; giverUserId: string; day: string; amount: number; createdAt: string };
+
 type Store = {
   configs: Record<string, GuildConfig>;
   users: Record<string, UserStats>;
@@ -44,9 +48,11 @@ type Store = {
   ignoredRoles: { guildId: string; roleId: string }[];
   managerRoles: { guildId: string; roleId: string }[];
   eventVoiceChannels: EventVoiceChannel[];
+  rewardGiverRoles: { guildId: string; roleId: string }[];
+  rewardGrants: RewardGrant[];
 };
 
-const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], ignoredRoles: [], managerRoles: [], eventVoiceChannels: [] });
+const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], ignoredRoles: [], managerRoles: [], eventVoiceChannels: [], rewardGiverRoles: [], rewardGrants: [] });
 fs.mkdirSync(path.dirname(env.databasePath), { recursive: true });
 const filePath = env.databasePath.endsWith(".sqlite") ? env.databasePath.replace(/\.sqlite$/, ".json") : env.databasePath;
 let store: Store = emptyStore();
@@ -100,7 +106,11 @@ export function getConfig(guildId: string): GuildConfig {
     voiceXpPerMinute: 12,
     stackRewards: 1,
     ignoreMutedVoice: 1,
+    rewardXpAmount: 75,
+    jailRoleId: null,
   };
+  store.configs[guildId].rewardXpAmount ??= 75;
+  store.configs[guildId].jailRoleId ??= null;
   return store.configs[guildId];
 }
 
@@ -197,16 +207,19 @@ export function isIgnoredChannel(guildId: string, channelId: string, kind: "text
   return store.ignoredChannels.some((c) => c.guildId === guildId && c.channelId === channelId && (c.kind === "all" || c.kind === kind));
 }
 
-export function toggleList(table: "ignored_channels" | "ignored_roles" | "manager_roles", guildId: string, id: string, enabled: boolean, kind = "all") {
+export function toggleList(table: "ignored_channels" | "ignored_roles" | "manager_roles" | "reward_giver_roles", guildId: string, id: string, enabled: boolean, kind = "all") {
   if (table === "ignored_channels") {
     store.ignoredChannels = store.ignoredChannels.filter((x) => !(x.guildId === guildId && x.channelId === id));
     if (enabled) store.ignoredChannels.push({ guildId, channelId: id, kind });
   } else if (table === "ignored_roles") {
     store.ignoredRoles = store.ignoredRoles.filter((x) => !(x.guildId === guildId && x.roleId === id));
     if (enabled) store.ignoredRoles.push({ guildId, roleId: id });
-  } else {
+  } else if (table === "manager_roles") {
     store.managerRoles = store.managerRoles.filter((x) => !(x.guildId === guildId && x.roleId === id));
     if (enabled) store.managerRoles.push({ guildId, roleId: id });
+  } else {
+    store.rewardGiverRoles = store.rewardGiverRoles.filter((x) => !(x.guildId === guildId && x.roleId === id));
+    if (enabled) store.rewardGiverRoles.push({ guildId, roleId: id });
   }
   saveSoon();
 }
@@ -235,4 +248,42 @@ export function setEventVoiceChannel(guildId: string, channelId: string, multipl
   const safeMultiplier = Math.min(3, Math.max(1, Math.floor(multiplier)));
   if (safeMultiplier > 1) store.eventVoiceChannels.push({ guildId, channelId, multiplier: safeMultiplier });
   saveSoon();
+}
+
+
+export function getRewardGiverRoles(guildId: string) {
+  return store.rewardGiverRoles.filter((r) => r.guildId === guildId).map((r) => r.roleId);
+}
+
+export function hasRewardGiverRole(guildId: string, roleIds: string[]) {
+  return store.rewardGiverRoles.some((r) => r.guildId === guildId && roleIds.includes(r.roleId));
+}
+
+export function getTodayRewardGrant(guildId: string, targetUserId: string) {
+  const day = new Date().toISOString().slice(0, 10);
+  return store.rewardGrants.find((r) => r.guildId === guildId && r.targetUserId === targetUserId && r.day === day) ?? null;
+}
+
+export function recordRewardGrant(guildId: string, targetUserId: string, giverUserId: string, amount: number) {
+  const day = new Date().toISOString().slice(0, 10);
+  const existing = store.rewardGrants.find((r) => r.guildId === guildId && r.targetUserId === targetUserId && r.day === day);
+  if (existing) return null;
+  const cutoff = new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10);
+  store.rewardGrants = store.rewardGrants.filter((r) => r.day >= cutoff);
+  const grant = { guildId, targetUserId, giverUserId, day, amount: Math.max(0, Math.floor(amount)), createdAt: new Date().toISOString() };
+  store.rewardGrants.push(grant);
+  saveSoon();
+  return grant;
+}
+
+export function resetUserStats(guildId: string, userId: string, username: string, avatarUrl: string | null) {
+  const user = ensureUser(guildId, userId, username, avatarUrl);
+  user.textXp = 0;
+  user.voiceXp = 0;
+  user.textMessages = 0;
+  user.voiceSeconds = 0;
+  user.level = 0;
+  user.updatedAt = new Date().toISOString();
+  saveSoon();
+  return user;
 }

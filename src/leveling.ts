@@ -1,5 +1,5 @@
 import type { GuildMember, TextBasedChannel } from "discord.js";
-import { getConfig, getRewards, getRanks, getManagerRoles, addActivity, ensureUser, getUser, setUserXp, hasIgnoredRole, isIgnoredChannel, getVoiceXpMultiplier } from "./db.js";
+import { getConfig, getRewards, getRanks, getManagerRoles, addActivity, ensureUser, getUser, setUserXp, hasIgnoredRole, isIgnoredChannel, getVoiceXpMultiplier, resetUserStats } from "./db.js";
 
 const textCooldowns = new Map<string, number>();
 
@@ -51,6 +51,7 @@ export async function processTextXp(member: GuildMember, channel: TextBasedChann
   if (member.user.bot) return null;
   const guildId = member.guild.id;
   const config = getConfig(guildId);
+  if (getConfig(guildId).jailRoleId && member.roles.cache.has(getConfig(guildId).jailRoleId!)) return null;
   if (isIgnoredChannel(guildId, contentChannelId, "text")) return null;
   if (hasIgnoredRole(guildId, member.roles.cache.map((r) => r.id))) return null;
   const key = cooldownKey(guildId, member.id);
@@ -71,6 +72,7 @@ export async function processVoiceMinute(member: GuildMember, channelId: string)
   if (member.user.bot) return null;
   const guildId = member.guild.id;
   const config = getConfig(guildId);
+  if (config.jailRoleId && member.roles.cache.has(config.jailRoleId)) return null;
   if (isIgnoredChannel(guildId, channelId, "voice")) return null;
   if (hasIgnoredRole(guildId, member.roles.cache.map((r) => r.id))) return null;
   if (config.ignoreMutedVoice && (member.voice.selfMute || member.voice.serverMute || member.voice.selfDeaf || member.voice.serverDeaf)) return null;
@@ -143,4 +145,17 @@ export function addManualXp(member: GuildMember, amount: number) {
   const level = levelFromXp(textXp + current.voiceXp);
   setUserXp(member.guild.id, member.id, textXp, current.voiceXp, level);
   return level;
+}
+
+
+export function addRewardXp(member: GuildMember, amount: number) {
+  const current = ensureUser(member.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
+  const xp = Math.max(0, Math.floor(amount));
+  const afterLevel = levelFromXp(totalXp(current) + xp);
+  addActivity({ guildId: member.guild.id, userId: member.id, username: member.user.username, avatarUrl: member.displayAvatarURL({ extension: "png", size: 128 }), textXp: xp, level: afterLevel });
+  return afterLevel;
+}
+
+export function resetForJail(member: GuildMember) {
+  resetUserStats(member.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
 }

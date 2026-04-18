@@ -1,7 +1,7 @@
 import { ChannelType, Client, GatewayIntentBits, Partials } from "discord.js";
 import { env } from "./config.js";
 import { registerSlashCommands, handleButtonInteraction, handleInteraction, handleModalSubmit, handlePrefixMessage } from "./commands.js";
-import { applyRewards, processTextXp, processVoiceMinute, sendLevelAnnouncement } from "./leveling.js";
+import { applyRewards, processTextXp, processVoiceMinute, resetForJail, sendLevelAnnouncement } from "./leveling.js";
 
 const client = new Client({
   intents: [
@@ -32,6 +32,16 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.deferred || interaction.replied) interaction.editReply("Nexus hit an error while processing this command.").catch(() => null);
     else interaction.reply({ content: "Nexus hit an error while processing this command.", ephemeral: true }).catch(() => null);
   });
+});
+
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  const config = (await import("./db.js")).getConfig(newMember.guild.id);
+  if (!config.jailRoleId) return;
+  const wasJailed = oldMember.roles.cache.has(config.jailRoleId);
+  const isJailed = newMember.roles.cache.has(config.jailRoleId);
+  if (!wasJailed && isJailed) {
+    resetForJail(newMember);
+  }
 });
 
 client.on("messageCreate", async (message) => {
