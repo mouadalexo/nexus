@@ -372,6 +372,23 @@ function buildHelpEmbed(guildId: string) {
     .setTimestamp();
 }
 
+function buildMemberHelpEmbed(guildId: string) {
+  const config = getConfig(guildId);
+  return new EmbedBuilder()
+    .setColor(brand)
+    .setTitle("✨ Nexus Member Commands")
+    .setDescription(`Use \`${config.prefix}help\` anytime to see this guide.`)
+    .addFields(
+      { name: "R = Rank", value: "See your rank card. Use `R @member` to see another member.", inline: false },
+      { name: "L = Level", value: "See your level card with messages, voice, and overall progress. Use `L @member` for another member.", inline: false },
+      { name: "S = Stats", value: "Open server statistics for top members and top channels.", inline: false },
+      { name: "Top = Leaderboard", value: "See the server leaderboard. You can also use `Top voice`, `Top text`, or `Top messages`.", inline: false },
+      { name: "Reward @member", value: "Reward givers can give the daily reward to one member.", inline: false },
+    )
+    .setFooter({ text: "Nexus - Night Stars Leveling" })
+    .setTimestamp();
+}
+
 async function handleHelp(interaction: ChatInputCommandInteraction) {
   await interaction.reply({ embeds: [buildHelpEmbed(interaction.guild!.id)], ephemeral: true });
 }
@@ -441,9 +458,16 @@ export async function handlePrefixMessage(message: Message) {
   const args = trimmed.split(/\s+/g);
   const command = args[0]?.toLowerCase();
   const rankAliases = new Set([config.prefix.toLowerCase(), "r", "rank"]);
-  const isMemberCommand = rankAliases.has(command) || command === "l" || command === "level" || command === "s" || command === "stats" || command === "statistics" || command === "top" || command === "leaderboard";
+  const prefixHelp = `${config.prefix.toLowerCase()}help`;
+  const isMemberCommand = command === prefixHelp || rankAliases.has(command) || command === "l" || command === "level" || command === "s" || command === "stats" || command === "statistics" || command === "top" || command === "leaderboard";
 
   if (isMemberCommand && isCommandBlockedChannel(message.guild.id, message.channelId)) return;
+
+  if (command === prefixHelp) {
+    if (args.length !== 1) return;
+    await message.reply({ embeds: [buildMemberHelpEmbed(message.guild.id)] });
+    return;
+  }
 
   if (rankAliases.has(command)) {
     if (!hasOnlyMentionOrIdArg(args) && args[1]?.toLowerCase() !== "help") return;

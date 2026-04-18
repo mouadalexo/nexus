@@ -7,7 +7,7 @@ export const env = {
   clientId: process.env.CLIENT_ID?.trim() ?? "",
   guildId: process.env.GUILD_ID?.trim() ?? "",
   databasePath: process.env.DATABASE_PATH?.trim() || "./data/nexus.sqlite",
-  defaultPrefix: process.env.DEFAULT_PREFIX?.trim() || "R",
+  defaultPrefix: process.env.DEFAULT_PREFIX?.trim() || "%",
 };
 
 if (!env.token) {
