@@ -27,6 +27,7 @@ export async function registerSlashCommands(client: Client) {
       .addSubcommand((s) => s.setName("add").setDescription("Add role reward at level").addIntegerOption((o) => o.setName("level").setDescription("Level").setMinValue(1).setMaxValue(500).setRequired(true)).addRoleOption((o) => o.setName("role").setDescription("Role reward").setRequired(true)))
       .addSubcommand((s) => s.setName("remove").setDescription("Remove rewards at level").addIntegerOption((o) => o.setName("level").setDescription("Level").setMinValue(1).setMaxValue(500).setRequired(true)).addRoleOption((o) => o.setName("role").setDescription("Optional exact role").setRequired(false)))
       .addSubcommand((s) => s.setName("list").setDescription("List role rewards")),
+    new SlashCommandBuilder().setName("help").setDescription("Show all Nexus commands and setup guide"),
     new SlashCommandBuilder().setName("xp").setDescription("Edit Nexus XP/ranks").setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
       .addSubcommand((s) => s.setName("add").setDescription("Add or remove text XP").addUserOption((o) => o.setName("user").setDescription("User").setRequired(true)).addIntegerOption((o) => o.setName("amount").setDescription("Use negative to remove").setMinValue(-1000000).setMaxValue(1000000).setRequired(true)))
       .addSubcommand((s) => s.setName("set-level").setDescription("Set a member level").addUserOption((o) => o.setName("user").setDescription("User").setRequired(true)).addIntegerOption((o) => o.setName("level").setDescription("Target level").setMinValue(0).setMaxValue(500).setRequired(true))),
@@ -134,8 +135,94 @@ async function handleXp(interaction: ChatInputCommandInteraction) {
   return interaction.reply({ content: `${member} level was updated.`, ephemeral: true });
 }
 
+
+async function handleHelp(interaction: ChatInputCommandInteraction) {
+  const config = getConfig(interaction.guild!.id);
+  const p = config.prefix;
+
+  const embed = new EmbedBuilder()
+    .setColor(brand)
+    .setTitle("🌌 Nexus — Leveling Bot Help")
+    .setDescription("Nexus tracks XP from messages and voice. Level up to earn role rewards.")
+    .addFields(
+      {
+        name: "📊 How XP is Earned",
+        value: [
+          "• **Text** — " + config.textMinXp + "–" + config.textMaxXp + " XP per message (" + config.textCooldownSeconds + "s cooldown)",
+          "• **Voice** — " + config.voiceXpPerMinute + " XP per minute in voice channels",
+          "• **Muted/deafened** — " + (config.ignoreMutedVoice ? "no voice XP" : "still earns voice XP"),
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "👤 Member Commands",
+        value: [
+          "`/rank [@user]` — Visual rank card with level & XP progress",
+          "`/level [@user]` — Detailed stat card (text XP, voice XP, messages)",
+          "`/top [type] [page]` — Leaderboard — types: overall · text · voice · messages",
+          "`" + p + "` — Prefix rank card (same as /rank)",
+          "`" + p + " @user` — Rank card for another member",
+          "`" + p + " level [@user]` — Level card",
+          "`" + p + " top [type]` — Leaderboard",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "⚙️ Admin / Manager Commands",
+        value: [
+          "`/nexus view` — See all current settings",
+          "`/nexus prefix <value>` — Change the prefix (default: R)",
+          "`/nexus levelup-channel <#ch>` — Where level-up messages are sent",
+          "`/nexus levelup-message <text>` — Customize level-up message",
+          "`/nexus xp-rates` — Set text min/max XP, cooldown, voice XP/min",
+          "`/nexus ignored-channel` — Stop a channel from giving XP",
+          "`/nexus ignored-role` — Stop a role from earning XP",
+          "`/nexus manager-role` — Let a role use /xp and /reward commands",
+          "`/nexus stack-rewards` — Keep all reward roles or only the highest",
+          "`/nexus muted-voice` — Toggle voice XP for muted/deafened users",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "🎁 Level Rewards",
+        value: [
+          "`/reward add <level> <@role>` — Give a role when a member reaches a level",
+          "`/reward remove <level> [@role]` — Remove a reward",
+          "`/reward list` — View all configured rewards",
+          "",
+          "**Reward mode:** " + (config.stackRewards ? "Stack — members keep all earned reward roles" : "Replace — only the highest reward role is kept"),
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "📋 XP Manager Commands",
+        value: [
+          "`/xp add <@user> <amount>` — Add or remove XP (use negative to subtract)",
+          "`/xp set-level <@user> <level>` — Force a member to a specific level",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "🚀 Quick Setup Guide",
+        value: [
+          "**1.** `/nexus levelup-channel` — Pick where level-up messages appear",
+          "**2.** `/nexus xp-rates` — Tune how fast members level up",
+          "**3.** `/reward add` — Set roles to award at each milestone",
+          "**4.** `/nexus manager-role` — Give your staff XP edit access",
+          "**5.** `/nexus view` — Confirm everything looks right",
+        ].join("\n"),
+        inline: false,
+      },
+    )
+    .setFooter({ text: "Nexus • Night Stars Leveling" })
+    .setTimestamp();
+
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
 export async function handleInteraction(interaction: ChatInputCommandInteraction) {
   if (!interaction.guild) return;
+  if (interaction.commandName === "help") return handleHelp(interaction);
   if (interaction.commandName === "rank") return replyRank(interaction);
   if (interaction.commandName === "level") return replyLevel(interaction);
   if (interaction.commandName === "top") return replyTop(interaction);
