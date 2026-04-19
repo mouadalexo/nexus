@@ -7,6 +7,21 @@ import { addRewardXp, applyRewards, canManageLevels, setLevel } from "./leveling
 const brand = 0x6f55ff;
 const leaderboardTypes = ["overall", "text", "voice", "messages"];
 const statsViews = ["overview", "message_members", "voice_members", "message_channels", "voice_channels"] as const;
+const setupDeleteMs = 5 * 60_000;
+const rankDeleteMs = 30_000;
+const menuDeleteMs = 60_000;
+
+function deleteReplyLater(interaction: ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction | StringSelectMenuInteraction, delayMs: number) {
+  setTimeout(() => {
+    interaction.deleteReply().catch(() => null);
+  }, delayMs).unref();
+}
+
+function deleteMessagesLater(delayMs: number, ...messages: (Message | undefined | null)[]) {
+  setTimeout(() => {
+    for (const message of messages) message?.delete().catch(() => null);
+  }, delayMs).unref();
+}
 
 export async function registerSlashCommands(client: Client) {
   if (!client.user) return;
@@ -217,7 +232,8 @@ function modal(id: string, title: string, inputs: TextInputBuilder[]) {
 
 async function handleSetup(interaction: ChatInputCommandInteraction) {
   if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to use the setup panel.", ephemeral: true });
-  return interaction.reply({ embeds: [setupIntroEmbed()], components: setupRows(), ephemeral: true });
+  await interaction.reply({ embeds: [setupIntroEmbed()], components: setupRows(), ephemeral: true });
+  deleteReplyLater(interaction, setupDeleteMs);
 }
 
 function extractId(value: string) {
@@ -261,9 +277,21 @@ function resetLabel(section: string) {
 
 async function openSetupModal(interaction: ButtonInteraction, action: string) {
   if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to use the setup panel.", ephemeral: true });
-  if (action === "view") return interaction.reply({ embeds: [setupEmbed(interaction.guild!.id)], ephemeral: true });
-  if (action === "reward_system") return interaction.reply({ embeds: [rewardEmbed(interaction.guild!.id)], components: rewardRows(), ephemeral: true });
-  if (action === "reset_setup") return interaction.reply({ content: "Choose the setup section you want to reset.", components: resetRows(), ephemeral: true });
+  if (action === "view") {
+    await interaction.reply({ embeds: [setupEmbed(interaction.guild!.id)], ephemeral: true });
+    deleteReplyLater(interaction, setupDeleteMs);
+    return;
+  }
+  if (action === "reward_system") {
+    await interaction.reply({ embeds: [rewardEmbed(interaction.guild!.id)], components: rewardRows(), ephemeral: true });
+    deleteReplyLater(interaction, setupDeleteMs);
+    return;
+  }
+  if (action === "reset_setup") {
+    await interaction.reply({ content: "Choose the setup section you want to reset.", components: resetRows(), ephemeral: true });
+    deleteReplyLater(interaction, setupDeleteMs);
+    return;
+  }
   if (action === "reward_amount") return interaction.showModal(modal("nexus_modal:reward_amount", "Set Daily Reward Amount", [textInput("amount", "Reward amount", "75") ]));
   if (action === "add_reward_role") return interaction.showModal(modal("nexus_modal:add_reward_role", "Add Reward Giver Role", [textInput("role", "Role ID or mention", "@Reward Giver or 123456789")]));
   if (action === "jail_role") return interaction.showModal(modal("nexus_modal:jail_role", "Set Jail Role", [textInput("role", "Jail role ID or mention", "@Jailed or 123456789. Leave 0 to remove") ]));
@@ -335,7 +363,8 @@ async function handleSetupModal(interaction: ModalSubmitInteraction) {
     if (channelId) setCommandBlockedChannel(guildId, channelId, action === "add_blocked_command_channel");
   }
   const isRewardAction = action === "reward_amount" || action === "add_reward_role" || action === "remove_reward_role";
-  return interaction.reply({ content: "Nexus setup updated.", embeds: [isRewardAction ? rewardEmbed(guildId) : setupEmbed(guildId)], components: isRewardAction ? rewardRows() : [], ephemeral: true });
+  await interaction.reply({ content: "Nexus setup updated.", embeds: [isRewardAction ? rewardEmbed(guildId) : setupEmbed(guildId)], components: isRewardAction ? rewardRows() : [], ephemeral: true });
+  deleteReplyLater(interaction, setupDeleteMs);
 }
 
 async function handleNexus(interaction: ChatInputCommandInteraction) {
@@ -383,7 +412,6 @@ function buildMemberHelpEmbed(guildId: string) {
       { name: "L = Level", value: "See your level card with messages, voice, and overall progress. Use `L @member` for another member.", inline: false },
       { name: "S = Stats", value: "Open server statistics for top members and top channels.", inline: false },
       { name: "Top = Leaderboard", value: "See the server leaderboard. You can also use `Top voice`, `Top text`, or `Top messages`.", inline: false },
-      { name: "Reward @member", value: "Reward givers can give the daily reward to one member.", inline: false },
     )
     .setFooter({ text: "Nexus - Night Stars Leveling" })
     .setTimestamp();
@@ -413,7 +441,9 @@ export async function handleStringSelectInteraction(interaction: StringSelectMen
   if (interaction.customId === "nexus_reset_select") {
     const section = interaction.values[0];
     resetSetupSection(interaction.guild.id, section);
-    return interaction.update({ content: `${resetLabel(section)} was reset.`, embeds: [setupEmbed(interaction.guild.id)], components: [] });
+    await interaction.update({ content: `${resetLabel(section)} was reset.`, embeds: [setupEmbed(interaction.guild.id)], components: [] });
+    deleteReplyLater(interaction, setupDeleteMs);
+    return;
   }
 }
 
@@ -479,7 +509,8 @@ export async function handlePrefixMessage(message: Message) {
     if (!member) return;
     const stats = ensureUser(message.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
     const file = await rankCard(member, stats);
-    await message.reply({ files: [file] });
+    const reply = await message.reply({ files: [file] });
+    deleteMessagesLater(rankDeleteMs, reply, message);
     return;
   }
 
@@ -489,7 +520,8 @@ export async function handlePrefixMessage(message: Message) {
     if (!member) return;
     const stats = ensureUser(message.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
     const file = await levelCard(member, stats);
-    await message.reply({ files: [file] });
+    const reply = await message.reply({ files: [file] });
+    deleteMessagesLater(rankDeleteMs, reply, message);
     return;
   }
 
@@ -499,13 +531,15 @@ export async function handlePrefixMessage(message: Message) {
     const type = normalizeType(firstArg);
     const pageArg = leaderboardTypes.includes(firstArg ?? "") ? args[2] : args[1];
     const page = Math.max(1, Number(pageArg ?? 1) || 1);
-    await sendTop(message, type, page);
+    const reply = await sendTop(message, type, page);
+    deleteMessagesLater(menuDeleteMs, reply, message);
     return;
   }
 
   if (command === "s" || command === "stats" || command === "statistics") {
     if (args.length !== 1) return;
-    await sendStats(message, "overview", 1);
+    const reply = await sendStats(message, "overview", 1);
+    deleteMessagesLater(menuDeleteMs, reply, message);
     return;
   }
 
