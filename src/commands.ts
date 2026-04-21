@@ -1,6 +1,6 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuInteraction, TextInputBuilder, TextInputStyle } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonInteraction, ButtonStyle, ChannelSelectMenuBuilder, ChannelSelectMenuInteraction, ChannelType, ChatInputCommandInteraction, Client, EmbedBuilder, GuildMember, Message, ModalBuilder, ModalSubmitInteraction, PermissionsBitField, REST, Routes, SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuInteraction, TextInputBuilder, TextInputStyle } from "discord.js";
 import { env } from "./config.js";
-import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, removeReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, getIgnoredChannels, getIgnoredRoles, getChannelLeaderboard, countChannels, isCommandBlockedChannel, getBlockedCommandChannels, setCommandBlockedChannel, type LeaderboardType } from "./db.js";
+import { countUsers, getConfig, updateConfig, ensureUser, getLeaderboard, getRewards, setReward, removeReward, toggleList, getManagerRoles, setEventVoiceChannel, getEventVoiceChannels, getRewardGiverRoles, hasRewardGiverRole, getTodayRewardGrant, recordRewardGrant, getIgnoredChannels, getIgnoredRoles, getChannelLeaderboard, countChannels, isCommandBlockedChannel, getBlockedCommandChannels, setCommandBlockedChannel, getAllowedCommandChannels, getAllowedCommandCategories, setAllowedCommandChannels, setAllowedCommandCategories, clearAllowedCommandRestrictions, isCommandAllowedHere, type LeaderboardType } from "./db.js";
 import { rankCard, levelCard, topCard, statsCard, type StatsView } from "./cards.js";
 import { addRewardXp, applyRewards, canManageLevels, setLevel } from "./leveling.js";
 
@@ -190,6 +190,7 @@ function setupRows() {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("nexus_panel:add_event_stage").setLabel("🎤 Event Voice").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("nexus_panel:add_blocked_command_channel").setLabel("⛔ Block Cmd Channel").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("nexus_panel:channel_restrictions").setLabel("📍 Channel Restrictions").setStyle(ButtonStyle.Primary),
     ),
   ];
 }
@@ -394,7 +395,7 @@ function buildHelpEmbed(guildId: string) {
     .addFields(
       { name: "📌 Member Commands", value: "`R` or `R @user` - Rank card\n`L` or `L @user` - Level card\n`S` - Statistics menu\n`Top` - Overall level leaderboard\n`Top voice`, `Top text`, `Top messages` - Other leaderboards", inline: false },
       { name: "🎁 Reward Giver", value: `Reward givers type \`Reward @user\` to give ${config.rewardXpAmount} hidden XP. A member can receive only one reward per day.`, inline: false },
-      { name: "🛠️ Staff Setup", value: "`/setup` - Open the full button panel\n`/nexus prefix` - Change rank shortcut prefix\n`/xp set-level` - Set a member level", inline: false },
+      { name: "🛠️ Staff Setup", value: "`/setup` - Open the full button panel (includes Channel Restrictions to pick where commands can be used)\n`/nexus prefix` - Change rank shortcut prefix\n`/xp set-level` - Set a member level", inline: false },
       { name: "🚫 Jail System", value: "When the jail role is added, Nexus resets that member to level 0 and blocks XP while they remain jailed. When unjailed, they start again from the beginning.", inline: false },
     )
     .setFooter({ text: "Nexus - Night Stars Leveling" })
@@ -421,8 +422,58 @@ async function handleHelp(interaction: ChatInputCommandInteraction) {
   await interaction.reply({ embeds: [buildHelpEmbed(interaction.guild!.id)], ephemeral: true });
 }
 
+function buildChannelRestrictionsPayload(guildId: string) {
+  const allowedChannels = getAllowedCommandChannels(guildId);
+  const allowedCategories = getAllowedCommandCategories(guildId);
+  const embed = new EmbedBuilder()
+    .setColor(brand)
+    .setTitle("📍 Channel Restrictions")
+    .setDescription("Pick the channels and/or categories where Nexus member commands (R, L, S, Top) are allowed. Leave both empty to allow them everywhere.")
+    .addFields(
+      { name: "Allowed channels", value: allowedChannels.length ? allowedChannels.map((id) => `<#${id}>`).join(" ") : "None — allowed everywhere", inline: false },
+      { name: "Allowed categories", value: allowedCategories.length ? allowedCategories.map((id) => `<#${id}>`).join(" ") : "None — allowed everywhere", inline: false },
+    )
+    .setFooter({ text: "Nexus • Channel Restrictions" });
+  const channelSelect = new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(
+    new ChannelSelectMenuBuilder()
+      .setCustomId("nexus_allowed_channels")
+      .setPlaceholder(allowedChannels.length ? `✅ ${allowedChannels.length} channel(s) selected` : "Select allowed channels…")
+      .addChannelTypes(ChannelType.GuildText)
+      .setMinValues(0)
+      .setMaxValues(25)
+      .setDefaultChannels(allowedChannels.slice(0, 25)),
+  );
+  const categorySelect = new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(
+    new ChannelSelectMenuBuilder()
+      .setCustomId("nexus_allowed_categories")
+      .setPlaceholder(allowedCategories.length ? `✅ ${allowedCategories.length} category(ies) selected` : "Select allowed categories…")
+      .addChannelTypes(ChannelType.GuildCategory)
+      .setMinValues(0)
+      .setMaxValues(25)
+      .setDefaultChannels(allowedCategories.slice(0, 25)),
+  );
+  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("nexus_panel:clear_channel_restrictions").setLabel("Clear restrictions").setStyle(ButtonStyle.Danger),
+  );
+  return { embeds: [embed], components: [channelSelect, categorySelect, buttons] };
+}
+
 export async function handleButtonInteraction(interaction: ButtonInteraction) {
   if (!interaction.guild) return;
+  if (interaction.customId === "nexus_panel:channel_restrictions") {
+    if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to update Nexus setup.", ephemeral: true });
+    const payload = buildChannelRestrictionsPayload(interaction.guild.id);
+    await interaction.reply({ ...payload, ephemeral: true });
+    deleteReplyLater(interaction, setupDeleteMs);
+    return;
+  }
+  if (interaction.customId === "nexus_panel:clear_channel_restrictions") {
+    if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to update Nexus setup.", ephemeral: true });
+    clearAllowedCommandRestrictions(interaction.guild.id);
+    const payload = buildChannelRestrictionsPayload(interaction.guild.id);
+    await interaction.update(payload);
+    return;
+  }
   if (interaction.customId.startsWith("nexus_panel:")) return openSetupModal(interaction, interaction.customId.split(":")[1]);
   if (interaction.customId.startsWith("nexus_stats:")) {
     const [, rawView, rawPage] = interaction.customId.split(":");
@@ -433,6 +484,23 @@ export async function handleButtonInteraction(interaction: ButtonInteraction) {
   const type = normalizeType(rawType);
   const page = Math.max(1, Number(rawPage) || 1);
   return sendTop(interaction, type, page);
+}
+
+export async function handleChannelSelectInteraction(interaction: ChannelSelectMenuInteraction) {
+  if (!interaction.guild) return;
+  if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "You do not have permission to update Nexus setup.", ephemeral: true });
+  if (interaction.customId === "nexus_allowed_channels") {
+    setAllowedCommandChannels(interaction.guild.id, interaction.values);
+    const payload = buildChannelRestrictionsPayload(interaction.guild.id);
+    await interaction.update(payload);
+    return;
+  }
+  if (interaction.customId === "nexus_allowed_categories") {
+    setAllowedCommandCategories(interaction.guild.id, interaction.values);
+    const payload = buildChannelRestrictionsPayload(interaction.guild.id);
+    await interaction.update(payload);
+    return;
+  }
 }
 
 export async function handleStringSelectInteraction(interaction: StringSelectMenuInteraction) {
@@ -492,6 +560,10 @@ export async function handlePrefixMessage(message: Message) {
   const isMemberCommand = command === prefixHelp || rankAliases.has(command) || command === "l" || command === "level" || command === "s" || command === "stats" || command === "statistics" || command === "top" || command === "leaderboard";
 
   if (isMemberCommand && isCommandBlockedChannel(message.guild.id, message.channelId)) return;
+  if (isMemberCommand) {
+    const parentId = (message.channel as any)?.parentId ?? null;
+    if (!isCommandAllowedHere(message.guild.id, message.channelId, parentId)) return;
+  }
 
   if (command === prefixHelp) {
     if (args.length !== 1) return;
@@ -509,8 +581,7 @@ export async function handlePrefixMessage(message: Message) {
     if (!member) return;
     const stats = ensureUser(message.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
     const file = await rankCard(member, stats);
-    const reply = await message.reply({ files: [file] });
-    deleteMessagesLater(rankDeleteMs, reply, message);
+    await message.reply({ files: [file] });
     return;
   }
 
@@ -520,8 +591,7 @@ export async function handlePrefixMessage(message: Message) {
     if (!member) return;
     const stats = ensureUser(message.guild.id, member.id, member.user.username, member.displayAvatarURL({ extension: "png", size: 128 }));
     const file = await levelCard(member, stats);
-    const reply = await message.reply({ files: [file] });
-    deleteMessagesLater(rankDeleteMs, reply, message);
+    await message.reply({ files: [file] });
     return;
   }
 
@@ -531,15 +601,13 @@ export async function handlePrefixMessage(message: Message) {
     const type = normalizeType(firstArg);
     const pageArg = leaderboardTypes.includes(firstArg ?? "") ? args[2] : args[1];
     const page = Math.max(1, Number(pageArg ?? 1) || 1);
-    const reply = await sendTop(message, type, page);
-    deleteMessagesLater(menuDeleteMs, reply, message);
+    await sendTop(message, type, page);
     return;
   }
 
   if (command === "s" || command === "stats" || command === "statistics") {
     if (args.length !== 1) return;
-    const reply = await sendStats(message, "overview", 1);
-    deleteMessagesLater(menuDeleteMs, reply, message);
+    await sendStats(message, "overview", 1);
     return;
   }
 
@@ -556,9 +624,5 @@ export async function handlePrefixMessage(message: Message) {
     const level = addRewardXp(target, config.rewardXpAmount);
     await message.reply(`${target} received today's reward and is now level ${level}.`);
     return;
-  }
-
-  if (command === "help") {
-    await message.reply({ embeds: [buildHelpEmbed(message.guild.id)] });
   }
 }

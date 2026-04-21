@@ -46,6 +46,8 @@ type Store = {
   rewards: { guildId: string; level: number; roleId: string }[];
   ignoredChannels: { guildId: string; channelId: string; kind: string }[];
   blockedCommandChannels: { guildId: string; channelId: string }[];
+  allowedCommandChannels: { guildId: string; channelId: string }[];
+  allowedCommandCategories: { guildId: string; categoryId: string }[];
   ignoredRoles: { guildId: string; roleId: string }[];
   managerRoles: { guildId: string; roleId: string }[];
   eventVoiceChannels: EventVoiceChannel[];
@@ -53,7 +55,7 @@ type Store = {
   rewardGrants: RewardGrant[];
 };
 
-const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], blockedCommandChannels: [], ignoredRoles: [], managerRoles: [], eventVoiceChannels: [], rewardGiverRoles: [], rewardGrants: [] });
+const emptyStore = (): Store => ({ configs: {}, users: {}, daily: {}, channels: {}, rewards: [], ignoredChannels: [], blockedCommandChannels: [], allowedCommandChannels: [], allowedCommandCategories: [], ignoredRoles: [], managerRoles: [], eventVoiceChannels: [], rewardGiverRoles: [], rewardGrants: [] });
 fs.mkdirSync(path.dirname(env.databasePath), { recursive: true });
 const filePath = env.databasePath.endsWith(".sqlite") ? env.databasePath.replace(/\.sqlite$/, ".json") : env.databasePath;
 let store: Store = emptyStore();
@@ -237,6 +239,43 @@ export function setCommandBlockedChannel(guildId: string, channelId: string, ena
   store.blockedCommandChannels = store.blockedCommandChannels.filter((c) => !(c.guildId === guildId && c.channelId === channelId));
   if (enabled) store.blockedCommandChannels.push({ guildId, channelId });
   saveSoon();
+}
+
+export function getAllowedCommandChannels(guildId: string) {
+  return (store.allowedCommandChannels ?? []).filter((c) => c.guildId === guildId).map((c) => c.channelId);
+}
+
+export function getAllowedCommandCategories(guildId: string) {
+  return (store.allowedCommandCategories ?? []).filter((c) => c.guildId === guildId).map((c) => c.categoryId);
+}
+
+export function setAllowedCommandChannels(guildId: string, channelIds: string[]) {
+  store.allowedCommandChannels ??= [];
+  store.allowedCommandChannels = store.allowedCommandChannels.filter((c) => c.guildId !== guildId);
+  for (const channelId of channelIds) store.allowedCommandChannels.push({ guildId, channelId });
+  saveSoon();
+}
+
+export function setAllowedCommandCategories(guildId: string, categoryIds: string[]) {
+  store.allowedCommandCategories ??= [];
+  store.allowedCommandCategories = store.allowedCommandCategories.filter((c) => c.guildId !== guildId);
+  for (const categoryId of categoryIds) store.allowedCommandCategories.push({ guildId, categoryId });
+  saveSoon();
+}
+
+export function clearAllowedCommandRestrictions(guildId: string) {
+  store.allowedCommandChannels = (store.allowedCommandChannels ?? []).filter((c) => c.guildId !== guildId);
+  store.allowedCommandCategories = (store.allowedCommandCategories ?? []).filter((c) => c.guildId !== guildId);
+  saveSoon();
+}
+
+export function isCommandAllowedHere(guildId: string, channelId: string, parentCategoryId: string | null) {
+  const allowedChannels = getAllowedCommandChannels(guildId);
+  const allowedCategories = getAllowedCommandCategories(guildId);
+  if (allowedChannels.length === 0 && allowedCategories.length === 0) return true;
+  if (allowedChannels.includes(channelId)) return true;
+  if (parentCategoryId && allowedCategories.includes(parentCategoryId)) return true;
+  return false;
 }
 
 export function toggleList(table: "ignored_channels" | "ignored_roles" | "manager_roles" | "reward_giver_roles", guildId: string, id: string, enabled: boolean, kind = "all") {

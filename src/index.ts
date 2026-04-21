@@ -1,6 +1,6 @@
 import { ChannelType, Client, GatewayIntentBits, Partials } from "discord.js";
 import { env } from "./config.js";
-import { registerSlashCommands, handleButtonInteraction, handleInteraction, handleModalSubmit, handlePrefixMessage, handleStringSelectInteraction } from "./commands.js";
+import { registerSlashCommands, handleButtonInteraction, handleChannelSelectInteraction, handleInteraction, handleModalSubmit, handlePrefixMessage, handleStringSelectInteraction } from "./commands.js";
 import { applyRewards, processTextXp, processVoiceMinute, resetForJail, sendLevelAnnouncement } from "./leveling.js";
 
 const client = new Client({
@@ -25,8 +25,8 @@ client.once("clientReady", async () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isModalSubmit() && !interaction.isStringSelectMenu()) return;
-  const action = interaction.isModalSubmit() ? handleModalSubmit(interaction) : interaction.isButton() ? handleButtonInteraction(interaction) : interaction.isStringSelectMenu() ? handleStringSelectInteraction(interaction) : handleInteraction(interaction);
+  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isModalSubmit() && !interaction.isStringSelectMenu() && !interaction.isChannelSelectMenu()) return;
+  const action = interaction.isModalSubmit() ? handleModalSubmit(interaction) : interaction.isButton() ? handleButtonInteraction(interaction) : interaction.isStringSelectMenu() ? handleStringSelectInteraction(interaction) : interaction.isChannelSelectMenu() ? handleChannelSelectInteraction(interaction) : handleInteraction(interaction);
   await action.catch((err) => {
     console.error("[Nexus] Interaction error:", err);
     if (interaction.deferred || interaction.replied) interaction.editReply("Nexus hit an error while processing this command.").catch(() => null);
