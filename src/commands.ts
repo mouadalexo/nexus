@@ -419,6 +419,7 @@ function buildMemberHelpEmbed(guildId: string) {
 }
 
 async function handleHelp(interaction: ChatInputCommandInteraction) {
+  if (!requireManager(interaction.member as GuildMember)) return interaction.reply({ content: "Only staff can view this guide. Members can use `%help` instead.", ephemeral: true });
   await interaction.reply({ embeds: [buildHelpEmbed(interaction.guild!.id)], ephemeral: true });
 }
 
