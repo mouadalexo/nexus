@@ -23,6 +23,18 @@ function cleanLabel(value: string, fallback: string) {
   return /[A-Za-z0-9]{2,}/.test(cleaned) ? cleaned : fallback;
 }
 
+function softLabel(value: string | undefined | null, fallback: string) {
+  if (!value) return fallback;
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return fallback;
+  const ascii = cleanLabel(cleaned, "");
+  return ascii || fallback;
+}
+
+function truncate(value: string, max: number) {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
 function compact(n: number) {
   return new Intl.NumberFormat("en-US", { notation: n >= 10000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(Math.floor(n));
 }
@@ -190,10 +202,38 @@ function statsValue(view: StatsView, item: UserStats | ChannelStats) {
   return compact(item.textMessages);
 }
 
-function statsName(guild: Guild, view: StatsView, item: UserStats | ChannelStats) {
-  if ("userId" in item) return cleanLabel(item.username, "member");
+function fallbackForView(view: StatsView, item: UserStats | ChannelStats) {
+  if ("userId" in item) return `User ${item.userId.slice(-4)}`;
+  return `Channel ${item.channelId.slice(-4)}`;
+}
+
+async function resolveRowMeta(
+  guild: Guild,
+  view: StatsView,
+  item: UserStats | ChannelStats,
+): Promise<{ name: string; avatarUrl: string | null; isChannel: boolean }> {
+  if ("userId" in item) {
+    const member = await guild.members.fetch(item.userId).catch(() => null);
+    const rawName = member?.displayName ?? member?.user.globalName ?? member?.user.username ?? item.username ?? "";
+    const name = softLabel(rawName, fallbackForView(view, item));
+    const avatarUrl = member?.displayAvatarURL({ extension: "png", size: 128 })
+      ?? item.avatarUrl
+      ?? null;
+    return { name: truncate(name, 24), avatarUrl, isChannel: false };
+  }
   const channel = guild.channels.cache.get(item.channelId);
-  return cleanLabel(channel?.name ?? `Channel ${item.channelId.slice(-4)}`, "channel");
+  const rawName = channel?.name ?? `Channel ${item.channelId.slice(-4)}`;
+  return { name: truncate(softLabel(rawName, fallbackForView(view, item)), 26), avatarUrl: null, isChannel: true };
+}
+
+function channelIconSvg(x: number, y: number, view: StatsView) {
+  const isVoice = view === "voice_channels";
+  const cx = x + 15;
+  const cy = y + 15;
+  if (isVoice) {
+    return `<g transform="translate(${cx - 9}, ${cy - 9})"><path d="M2 7 L7 7 L13 1 L13 17 L7 11 L2 11 Z" fill="${cyan}"/><path d="M15 4 Q19 9 15 14" stroke="${cyan}" stroke-width="1.6" fill="none" stroke-linecap="round"/></g>`;
+  }
+  return `<text x="${cx}" y="${cy + 9}" text-anchor="middle" font-family="Arial, sans-serif" font-size="26" font-weight="900" fill="${cyan}">#</text>`;
 }
 
 export async function statsCard(guild: Guild, view: StatsView, page: number, users: UserStats[], channels: ChannelStats[]) {
@@ -212,24 +252,68 @@ export async function statsCard(guild: Guild, view: StatsView, page: number, use
     const y = 165 + i * 92;
     return `<rect x="70" y="${y}" width="860" height="70" rx="15" fill="#121827" stroke="#2a3552"/><text x="105" y="${y + 31}" font-family="Arial, sans-serif" font-size="25" font-weight="900" fill="${textMain}">${esc(item[0])}</text><text x="105" y="${y + 55}" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">${esc(item[1])}</text><text x="890" y="${y + 45}" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" fill="${lavender}">›</text>`;
   }).join("");
+
+  const ROW_HEIGHT = 44;
+  const ROW_GAP = 6;
+  const ROW_STRIDE = ROW_HEIGHT + ROW_GAP;
+  const ROW_START_Y = 150;
+  const CARD_HEIGHT = view === "overview" ? 650 : 760;
+  const PANEL_HEIGHT = view === "overview" ? 595 : 705;
+  const FOOTER_Y = view === "overview" ? 620 : 735;
+
+  const meta = view === "overview" ? [] : await Promise.all(items.map((item) => resolveRowMeta(guild, view, item)));
+
   const rows = items.map((item, i) => {
     const rank = (safePage - 1) * 10 + i + 1;
-    const y = 145 + i * 46;
-    const name = statsName(guild, view, item);
+    const y = ROW_START_Y + i * ROW_STRIDE;
     const value = statsValue(view, item);
-    return `<rect x="55" y="${y}" width="890" height="38" rx="9" fill="${i % 2 ? "#242934" : "#30343d"}" opacity="0.98"/><rect x="55" y="${y}" width="58" height="38" rx="9" fill="#151922"/><text x="84" y="${y + 26}" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="900" fill="${textMain}">${rank}</text><text x="140" y="${y + 26}" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="${textMain}">${esc(name)}</text><rect x="770" y="${y + 7}" width="145" height="24" rx="6" fill="#1a1f2b"/><text x="842" y="${y + 26}" text-anchor="middle" font-family="Arial, sans-serif" font-size="19" font-weight="900" fill="${textMain}">${esc(value)}</text>`;
+    const m = meta[i];
+    const isMemberRow = !m.isChannel;
+    const name = m.name;
+    const iconCircleX = 122;
+    const iconCircleY = y + 7;
+    const nameX = 175;
+    const iconMarkup = isMemberRow
+      ? `<circle cx="${iconCircleX + 15}" cy="${iconCircleY + 15}" r="16" fill="#0b1128" stroke="#3a4264" stroke-width="1"/>`
+      : `<rect x="${iconCircleX}" y="${iconCircleY}" width="30" height="30" rx="8" fill="#0b1128" stroke="#3a4264" stroke-width="1"/>${channelIconSvg(iconCircleX, iconCircleY, view)}`;
+    return `<rect x="55" y="${y}" width="890" height="${ROW_HEIGHT}" rx="11" fill="${i % 2 ? "#242934" : "#30343d"}" opacity="0.98"/>` +
+      `<rect x="55" y="${y}" width="62" height="${ROW_HEIGHT}" rx="11" fill="#151922"/>` +
+      `<text x="86" y="${y + 29}" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="900" fill="${textMain}">${rank}</text>` +
+      iconMarkup +
+      `<text x="${nameX}" y="${y + 29}" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="${textMain}">${esc(name)}</text>` +
+      `<rect x="770" y="${y + 10}" width="155" height="24" rx="6" fill="#1a1f2b"/>` +
+      `<text x="847" y="${y + 29}" text-anchor="middle" font-family="Arial, sans-serif" font-size="19" font-weight="900" fill="${textMain}">${esc(value)}</text>`;
   }).join("");
-  const svg = `<svg width="1000" height="650" viewBox="0 0 1000 650" xmlns="http://www.w3.org/2000/svg">
-    ${cardDefs(650)}
-    <rect x="25" y="20" width="950" height="595" rx="28" fill="#171a22" opacity="0.95" stroke="#2d3350" stroke-width="2"/>
+
+  const svg = `<svg width="1000" height="${CARD_HEIGHT}" viewBox="0 0 1000 ${CARD_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+    ${cardDefs(CARD_HEIGHT)}
+    <rect x="25" y="20" width="950" height="${PANEL_HEIGHT}" rx="28" fill="#171a22" opacity="0.95" stroke="#2d3350" stroke-width="2"/>
     <circle cx="76" cy="67" r="34" fill="#050814" stroke="${purple}" stroke-width="3"/>
     <text x="125" y="61" font-family="Arial, sans-serif" font-size="34" font-weight="900" fill="${textMain}">${esc(guildName)}</text>
     <text x="125" y="92" font-family="Arial, sans-serif" font-size="21" fill="${textSoft}">Nexus Top Statistics</text>
-    ${view === "overview" ? `<text x="55" y="133" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="${textMain}">Overview</text><rect x="55" y="145" width="890" height="1" fill="#2d3350"/>${overview}` : `<text x="55" y="133" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="${textMain}">${esc(statsTitle(view))}</text><rect x="810" y="93" width="120" height="46" rx="12" fill="#202533" stroke="#3a4264"/><text x="870" y="122" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="900" fill="${textMain}">Page ${safePage}/${totalPages}</text>${rows}<text x="55" y="620" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">Server Lookback: All time — Timezone: UTC</text><text x="930" y="620" text-anchor="end" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">Powered by Nexus</text>`}
+    ${view === "overview"
+      ? `<text x="55" y="133" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="${textMain}">Overview</text><rect x="55" y="145" width="890" height="1" fill="#2d3350"/>${overview}`
+      : `<text x="55" y="133" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="${textMain}">${esc(statsTitle(view))}</text>` +
+        `<rect x="810" y="93" width="120" height="46" rx="12" fill="#202533" stroke="#3a4264"/>` +
+        `<text x="870" y="122" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="900" fill="${textMain}">Page ${safePage}/${totalPages}</text>` +
+        rows +
+        `<text x="55" y="${FOOTER_Y}" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">Server Lookback: All time</text>` +
+        `<text x="945" y="${FOOTER_Y}" text-anchor="end" font-family="Arial, sans-serif" font-size="17" fill="${textSoft}">Powered by Night Stars</text>`
+    }
   </svg>`;
   const composites: any[] = [];
   const guildIcon = guild.iconURL?.({ extension: "png", size: 128 }) ?? null;
   const icon = await avatarComposite(guildIcon, 42, 33, 68);
   if (icon) composites.push(icon);
+  if (view !== "overview") {
+    const avatarComposites = await Promise.all(
+      meta.map((m, i) => {
+        if (!m || m.isChannel || !m.avatarUrl) return null;
+        const y = ROW_START_Y + i * ROW_STRIDE;
+        return avatarComposite(m.avatarUrl, 122, y + 7, 30);
+      }),
+    );
+    composites.push(...avatarComposites.filter(Boolean));
+  }
   return new AttachmentBuilder(await render(svg, composites), { name: "nexus-stats.png" });
 }

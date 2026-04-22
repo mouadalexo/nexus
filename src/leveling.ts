@@ -93,12 +93,55 @@ export async function applyRewards(member: GuildMember, newLevel: number) {
   const toGive = eligible.filter((r) => r.level === highestLevel);
   const toRemove = rewards.filter((r) => r.level < highestLevel);
   const added: string[] = [];
+  const me = member.guild.members.me;
+  if (!me?.permissions.has("ManageRoles")) {
+    console.error(`[Nexus] Cannot apply rewards in guild ${member.guild.id}: bot is missing Manage Roles permission.`);
+    return [];
+  }
+  let fresh = member;
+  try {
+    fresh = await member.fetch(true);
+  } catch (err) {
+    console.error(`[Nexus] Failed to refresh member ${member.id} before applying rewards:`, err);
+  }
   for (const reward of toRemove) {
-    if (member.roles.cache.has(reward.roleId)) await member.roles.remove(reward.roleId).catch(() => null);
+    if (!fresh.roles.cache.has(reward.roleId)) continue;
+    const role = member.guild.roles.cache.get(reward.roleId);
+    if (!role) {
+      console.warn(`[Nexus] Reward role ${reward.roleId} (level ${reward.level}) no longer exists in guild ${member.guild.id}.`);
+      continue;
+    }
+    if (role.position >= me.roles.highest.position) {
+      console.error(`[Nexus] Cannot remove reward role ${role.name} (${role.id}): bot's highest role is not above it. Move the bot role above ${role.name}.`);
+      continue;
+    }
+    try {
+      await fresh.roles.remove(reward.roleId, `Nexus level reward downgrade (level ${reward.level})`);
+    } catch (err) {
+      console.error(`[Nexus] Failed to remove reward role ${role.name} (${role.id}) from ${fresh.user.tag}:`, err);
+    }
   }
   for (const reward of toGive) {
-    if (!member.roles.cache.has(reward.roleId)) {
-      await member.roles.add(reward.roleId).then(() => added.push(reward.roleId)).catch(() => null);
+    if (fresh.roles.cache.has(reward.roleId)) continue;
+    const role = member.guild.roles.cache.get(reward.roleId);
+    if (!role) {
+      console.warn(`[Nexus] Reward role ${reward.roleId} (level ${reward.level}) no longer exists in guild ${member.guild.id}.`);
+      continue;
+    }
+    if (role.managed) {
+      console.error(`[Nexus] Cannot give managed role ${role.name} (${role.id}). Pick a manual role for level ${reward.level}.`);
+      continue;
+    }
+    if (role.position >= me.roles.highest.position) {
+      console.error(`[Nexus] Cannot give reward role ${role.name} (${role.id}) to ${fresh.user.tag}: bot's highest role is not above it. Move the bot role above ${role.name}.`);
+      continue;
+    }
+    try {
+      await fresh.roles.add(reward.roleId, `Nexus level reward (reached level ${newLevel})`);
+      added.push(reward.roleId);
+      console.log(`[Nexus] Gave level ${reward.level} role ${role.name} to ${fresh.user.tag} (now level ${newLevel}) in ${member.guild.name}.`);
+    } catch (err) {
+      console.error(`[Nexus] Failed to add reward role ${role.name} (${role.id}) to ${fresh.user.tag}:`, err);
     }
   }
   return added;
